@@ -1,0 +1,42 @@
+{
+  "name": "agent-memory",
+  "version": "0.1.0",
+  "description": "Persistent memory MCP server for AI coding agents — episodic event log + semantic knowledge graph with reflection and compression",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "bin": {
+    "agent-memory": "./dist/bin/agent-memory.js"
+  },
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch bin/agent-memory.ts",
+    "start": "node dist/bin/agent-memory.js",
+    "serve": "tsx bin/agent-memory.ts serve",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@huggingface/transformers": "^3.4.0",
+    "@lancedb/lancedb": "^0.14.0",
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "better-sqlite3": "^11.8.0",
+    "commander": "^13.1.0",
+    "dotenv": "^16.4.0",
+    "ulid": "^2.3.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
