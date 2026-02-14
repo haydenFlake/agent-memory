@@ -70,14 +70,18 @@ export class ConsolidationEngine {
           updated_at: new Date().toISOString(),
         })
 
-        const textForEmbedding = [
-          entity.name,
-          entity.summary ?? '',
-          ...entity.observations,
-        ].join(' ')
-        const vector = await this.embeddings.embed(textForEmbedding)
-        await this.lance.delete(entity.id)
-        await this.lance.add(entity.id, 'entity', vector, textForEmbedding, new Date().toISOString())
+        try {
+          const textForEmbedding = [
+            entity.name,
+            entity.summary ?? '',
+            ...entity.observations,
+          ].join(' ')
+          const vector = await this.embeddings.embed(textForEmbedding)
+          await this.lance.delete(entity.id)
+          await this.lance.add(entity.id, 'entity', vector, textForEmbedding, new Date().toISOString())
+        } catch (err) {
+          logger.warn(`Failed to update vector for entity ${entity.name}, sqlite updated but vector may be stale`, err)
+        }
 
         entitiesUpdated++
       }

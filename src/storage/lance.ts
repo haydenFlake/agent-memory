@@ -103,6 +103,10 @@ export class LanceStorage {
     let query = table.search(queryVector).limit(limit)
 
     if (memoryType) {
+      const allowed = ['event', 'entity', 'reflection'] as const
+      if (!allowed.includes(memoryType)) {
+        throw new Error(`Invalid memory_type: ${memoryType}`)
+      }
       query = query.where(`memory_type = '${memoryType}'`)
     }
 

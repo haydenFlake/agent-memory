@@ -16,6 +16,7 @@ export async function runReflect(config: Config, agentId: string, force: boolean
 
   if (!reflection.enabled) {
     console.error('Reflection requires ANTHROPIC_API_KEY to be configured')
+    sqlite.close()
     process.exit(1)
   }
 

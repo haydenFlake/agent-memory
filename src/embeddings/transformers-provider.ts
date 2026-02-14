@@ -26,6 +26,7 @@ export class TransformersEmbeddingProvider implements EmbeddingProvider {
           dtype: 'fp32',
         })
       } catch (err) {
+        this.loading = null
         throw new EmbeddingError(`Failed to load embedding model ${this.model}: ${err}`)
       }
     })()

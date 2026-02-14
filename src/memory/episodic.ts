@@ -1,6 +1,7 @@
 import type { Config } from '../core/config.js'
 import type { EmbeddingProvider, EventType, MemoryEvent, TimeRange } from '../core/types.js'
 import { generateId } from '../core/ulid.js'
+import { logger } from '../utils/logger.js'
 import type { LanceStorage } from '../storage/lance.js'
 import type { SqliteStorage } from '../storage/sqlite.js'
 import { ImportanceScorer } from './importance.js'
@@ -54,8 +55,13 @@ export class EpisodicMemory {
 
     this.sqlite.insertEvent(event)
 
-    const vector = await this.embeddings.embed(params.content)
-    await this.lance.add(id, 'event', vector, params.content, now)
+    try {
+      const vector = await this.embeddings.embed(params.content)
+      await this.lance.add(id, 'event', vector, params.content, now)
+    } catch (err) {
+      this.sqlite.deleteEvent(id)
+      throw err
+    }
 
     return event
   }

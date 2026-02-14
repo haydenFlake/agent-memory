@@ -22,7 +22,7 @@ src/storage/    — SQLite + LanceDB abstractions
 src/embeddings/ — HuggingFace embedding provider
 src/memory/     — Episodic, Semantic, Retrieval, Reflection, Consolidation, Importance
 src/mcp/        — MCP server with 13 tools
-src/cli/        — CLI commands (init, serve, status, reflect)
+src/cli/        — CLI commands (init, serve, status, reflect, consolidate)
 bin/            — Entry point
 ```
 

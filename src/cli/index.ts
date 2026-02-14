@@ -57,5 +57,16 @@ export function createCli(): Command {
       await runReflect(config, opts.agentId, opts.force ?? false)
     })
 
+  program
+    .command('consolidate')
+    .description('Run memory consolidation (prune old observations, refresh summaries)')
+    .option('-d, --data-dir <path>', 'Data directory path')
+    .option('--max-age <days>', 'Max age in days for pruning', parseInt)
+    .action(async (opts) => {
+      const config = loadConfig({ dataDir: opts.dataDir })
+      const { runConsolidate } = await import('./commands/consolidate.js')
+      await runConsolidate(config, opts.maxAge)
+    })
+
   return program
 }

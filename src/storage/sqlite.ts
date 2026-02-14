@@ -215,6 +215,10 @@ export class SqliteStorage {
     `).run(id)
   }
 
+  deleteEvent(id: string): void {
+    this.db.prepare('DELETE FROM events WHERE id = ?').run(id)
+  }
+
   getEventCount(agentId?: string): number {
     if (agentId) {
       return (this.db.prepare('SELECT COUNT(*) as c FROM events WHERE agent_id = ?').get(agentId) as { c: number }).c
@@ -436,6 +440,15 @@ export class SqliteStorage {
 
   // --- Row Converters ---
 
+  private safeJsonParse<T>(value: unknown, fallback: T): T {
+    if (typeof value !== 'string' || !value) return fallback
+    try {
+      return JSON.parse(value) as T
+    } catch {
+      return fallback
+    }
+  }
+
   private rowToEvent(row: Record<string, unknown>): MemoryEvent {
     return {
       id: row.id as string,
@@ -443,8 +456,8 @@ export class SqliteStorage {
       event_type: row.event_type as MemoryEvent['event_type'],
       content: row.content as string,
       importance: row.importance as number,
-      entities: JSON.parse((row.entities as string) || '[]'),
-      metadata: JSON.parse((row.metadata as string) || '{}'),
+      entities: this.safeJsonParse<string[]>(row.entities, []),
+      metadata: this.safeJsonParse<Record<string, unknown>>(row.metadata, {}),
       created_at: row.created_at as string,
       accessed_at: (row.accessed_at as string) || null,
       access_count: (row.access_count as number) || 0,
@@ -457,7 +470,7 @@ export class SqliteStorage {
       name: row.name as string,
       entity_type: row.entity_type as Entity['entity_type'],
       summary: (row.summary as string) || null,
-      observations: JSON.parse((row.observations as string) || '[]'),
+      observations: this.safeJsonParse<string[]>(row.observations, []),
       importance: row.importance as number,
       created_at: row.created_at as string,
       updated_at: row.updated_at as string,
@@ -475,7 +488,7 @@ export class SqliteStorage {
       weight: row.weight as number,
       valid_from: row.valid_from as string,
       valid_until: (row.valid_until as string) || null,
-      metadata: JSON.parse((row.metadata as string) || '{}'),
+      metadata: this.safeJsonParse<Record<string, unknown>>(row.metadata, {}),
       created_at: row.created_at as string,
     }
   }
@@ -484,7 +497,7 @@ export class SqliteStorage {
     return {
       id: row.id as string,
       content: row.content as string,
-      source_ids: JSON.parse((row.source_ids as string) || '[]'),
+      source_ids: this.safeJsonParse<string[]>(row.source_ids, []),
       importance: row.importance as number,
       depth: (row.depth as number) || 1,
       created_at: row.created_at as string,
