@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { cosineSimilarity } from './provider.js'
+import { EmbeddingError } from '../core/errors.js'
 
 describe('cosineSimilarity', () => {
   it('returns 1.0 for identical vectors', () => {
@@ -19,8 +20,9 @@ describe('cosineSimilarity', () => {
     expect(cosineSimilarity(a, b)).toBeCloseTo(-1.0)
   })
 
-  it('returns 0 for different-length vectors', () => {
-    expect(cosineSimilarity([1, 2], [1, 2, 3])).toBe(0)
+  it('throws EmbeddingError for different-length vectors', () => {
+    expect(() => cosineSimilarity([1, 2], [1, 2, 3])).toThrow(EmbeddingError)
+    expect(() => cosineSimilarity([1, 2], [1, 2, 3])).toThrow('Dimension mismatch')
   })
 
   it('returns 0 for zero vectors', () => {

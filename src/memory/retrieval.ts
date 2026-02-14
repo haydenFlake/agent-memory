@@ -1,8 +1,9 @@
 import type { Config } from '../core/config.js'
 import type { EmbeddingProvider, RecallResult, ScoredMemory } from '../core/types.js'
-import { cosineSimilarity } from '../embeddings/provider.js'
 import type { LanceStorage } from '../storage/lance.js'
 import type { SqliteStorage } from '../storage/sqlite.js'
+import { logger } from '../utils/logger.js'
+import { clamp } from '../utils/validation.js'
 
 export class RetrievalEngine {
   private sqlite: SqliteStorage
@@ -40,7 +41,10 @@ export class RetrievalEngine {
 
     for (const result of vectorResults) {
       const memory = this.resolveMemory(result.memory_id, result.memory_type)
-      if (!memory) continue
+      if (!memory) {
+        logger.warn(`Vector record has no matching SQLite record: ${result.memory_type}:${result.memory_id}`)
+        continue
+      }
 
       if (params.agent_id && result.memory_type === 'event') {
         const event = this.sqlite.getEvent(result.memory_id)
@@ -49,7 +53,7 @@ export class RetrievalEngine {
 
       const relevance = 1 - result.distance / 2
       const recency = this.calculateRecency(memory.accessed_at ?? memory.created_at, now)
-      const importance = memory.importance
+      const importance = clamp(memory.importance, 0, 1)
 
       const score =
         this.config.weightRecency * recency +
@@ -121,8 +125,7 @@ export class RetrievalEngine {
         }
       }
       case 'reflection': {
-        const reflections = this.sqlite.getReflections(1000)
-        const reflection = reflections.find(r => r.id === id)
+        const reflection = this.sqlite.getReflectionById(id)
         if (!reflection) return null
         return {
           content: reflection.content,

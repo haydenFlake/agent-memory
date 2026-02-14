@@ -235,7 +235,7 @@ describe('MCP Server Integration', () => {
     const text = getText(result)
     expect(text).toContain('Specific event content')
     expect(text).toContain('TestEntity')
-    expect(text).toContain('"key":"value"')
+    expect(text).toContain('&quot;key&quot;:&quot;value&quot;')
   })
 
   it('get_event returns error for missing event', async () => {
@@ -529,5 +529,85 @@ describe('MCP Server Integration', () => {
     const text = getText(result)
     expect(text).toContain('<last_reflection>never</last_reflection>')
     expect(text).toContain('<last_consolidation>never</last_consolidation>')
+  })
+
+  // ========== XML ESCAPING ==========
+
+  it('escapes XML special characters in event content', async () => {
+    await client.callTool({
+      name: 'record_event',
+      arguments: {
+        agent_id: 'agent-1',
+        event_type: 'observation',
+        content: 'User said <script>alert("xss")</script> & more',
+        entities: ['Alice & Bob', 'Project "X"'],
+      },
+    })
+
+    const result = await client.callTool({
+      name: 'search_events',
+      arguments: { query: 'script' },
+    })
+
+    const text = getText(result)
+    expect(text).toContain('&lt;script&gt;')
+    expect(text).toContain('&amp; more')
+    expect(text).not.toContain('<script>')
+  })
+
+  it('escapes XML special characters in entity names', async () => {
+    await client.callTool({
+      name: 'update_entity',
+      arguments: {
+        name: 'Test & "Entity"',
+        entity_type: 'concept',
+        observations: ['Has <special> chars'],
+        summary: 'A "summary" with <tags>',
+      },
+    })
+
+    const result = await client.callTool({
+      name: 'search_knowledge',
+      arguments: { query: 'special chars' },
+    })
+
+    const text = getText(result)
+    expect(text).toContain('Test &amp; &quot;Entity&quot;')
+    expect(text).toContain('&lt;special&gt;')
+    expect(text).toContain('A &quot;summary&quot; with &lt;tags&gt;')
+  })
+
+  // ========== isError FLAG ==========
+
+  it('get_event error has isError flag', async () => {
+    const result = await client.callTool({
+      name: 'get_event',
+      arguments: { event_id: 'nonexistent' },
+    })
+
+    expect(result.isError).toBe(true)
+  })
+
+  it('create_relation error has isError flag', async () => {
+    await client.callTool({
+      name: 'update_entity',
+      arguments: { name: 'Alice', entity_type: 'person' },
+    })
+
+    const result = await client.callTool({
+      name: 'create_relation',
+      arguments: { from_entity: 'Alice', to_entity: 'Missing', relation_type: 'knows' },
+    })
+
+    expect(result.isError).toBe(true)
+  })
+
+  it('reflect error has isError flag', async () => {
+    const result = await client.callTool({
+      name: 'reflect',
+      arguments: { agent_id: 'agent-1' },
+    })
+
+    expect(result.isError).toBe(true)
   })
 })

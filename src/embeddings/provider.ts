@@ -1,9 +1,12 @@
 import type { EmbeddingProvider } from '../core/types.js'
+import { EmbeddingError } from '../core/errors.js'
 
 export type { EmbeddingProvider }
 
 export function cosineSimilarity(a: number[], b: number[]): number {
-  if (a.length !== b.length) return 0
+  if (a.length !== b.length) {
+    throw new EmbeddingError(`Dimension mismatch in cosineSimilarity: ${a.length} vs ${b.length}`)
+  }
   let dotProduct = 0
   let normA = 0
   let normB = 0

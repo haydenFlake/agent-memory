@@ -1,6 +1,6 @@
 import { Command } from 'commander'
 import { loadConfig } from '../core/config.js'
-import { setLogLevel } from '../utils/logger.js'
+import { logger, setLogLevel } from '../utils/logger.js'
 
 export function createCli(): Command {
   const program = new Command()
@@ -15,8 +15,13 @@ export function createCli(): Command {
     .description('Initialize the data directory for agent memory storage')
     .option('-d, --data-dir <path>', 'Data directory path', './data')
     .action(async (opts) => {
-      const { runInit } = await import('./commands/init.js')
-      runInit(opts.dataDir)
+      try {
+        const { runInit } = await import('./commands/init.js')
+        runInit(opts.dataDir)
+      } catch (err) {
+        logger.error('init failed', { error: err })
+        process.exit(1)
+      }
     })
 
   program
@@ -25,14 +30,19 @@ export function createCli(): Command {
     .option('-d, --data-dir <path>', 'Data directory path')
     .option('--log-level <level>', 'Log level (debug, info, warn, error)')
     .action(async (opts) => {
-      const config = loadConfig({
-        dataDir: opts.dataDir,
-        logLevel: opts.logLevel,
-      })
-      setLogLevel(config.logLevel as 'debug' | 'info' | 'warn' | 'error')
+      try {
+        const config = loadConfig({
+          dataDir: opts.dataDir,
+          logLevel: opts.logLevel,
+        })
+        setLogLevel(config.logLevel as 'debug' | 'info' | 'warn' | 'error')
 
-      const { runServe } = await import('./commands/serve.js')
-      await runServe(config)
+        const { runServe } = await import('./commands/serve.js')
+        await runServe(config)
+      } catch (err) {
+        logger.error('serve failed', { error: err })
+        process.exit(1)
+      }
     })
 
   program
@@ -40,9 +50,14 @@ export function createCli(): Command {
     .description('Show memory system statistics')
     .option('-d, --data-dir <path>', 'Data directory path')
     .action(async (opts) => {
-      const config = loadConfig({ dataDir: opts.dataDir })
-      const { runStatus } = await import('./commands/status.js')
-      await runStatus(config)
+      try {
+        const config = loadConfig({ dataDir: opts.dataDir })
+        const { runStatus } = await import('./commands/status.js')
+        await runStatus(config)
+      } catch (err) {
+        logger.error('status failed', { error: err })
+        process.exit(1)
+      }
     })
 
   program
@@ -52,9 +67,14 @@ export function createCli(): Command {
     .option('-f, --force', 'Force reflection even if threshold not met')
     .option('-d, --data-dir <path>', 'Data directory path')
     .action(async (opts) => {
-      const config = loadConfig({ dataDir: opts.dataDir })
-      const { runReflect } = await import('./commands/reflect.js')
-      await runReflect(config, opts.agentId, opts.force ?? false)
+      try {
+        const config = loadConfig({ dataDir: opts.dataDir })
+        const { runReflect } = await import('./commands/reflect.js')
+        await runReflect(config, opts.agentId, opts.force ?? false)
+      } catch (err) {
+        logger.error('reflect failed', { error: err })
+        process.exit(1)
+      }
     })
 
   program
@@ -63,9 +83,14 @@ export function createCli(): Command {
     .option('-d, --data-dir <path>', 'Data directory path')
     .option('--max-age <days>', 'Max age in days for pruning', parseInt)
     .action(async (opts) => {
-      const config = loadConfig({ dataDir: opts.dataDir })
-      const { runConsolidate } = await import('./commands/consolidate.js')
-      await runConsolidate(config, opts.maxAge)
+      try {
+        const config = loadConfig({ dataDir: opts.dataDir })
+        const { runConsolidate } = await import('./commands/consolidate.js')
+        await runConsolidate(config, opts.maxAge)
+      } catch (err) {
+        logger.error('consolidate failed', { error: err })
+        process.exit(1)
+      }
     })
 
   return program

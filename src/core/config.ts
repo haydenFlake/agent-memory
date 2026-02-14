@@ -62,5 +62,42 @@ export function loadConfig(overrides?: Partial<Config>): Config {
     }
   }
 
+  validateConfig(base)
   return base
+}
+
+function validateConfig(config: Config): void {
+  const errors: string[] = []
+
+  if (config.decayRate <= 0 || config.decayRate >= 1) {
+    errors.push(`decayRate must be in (0, 1) exclusive, got ${config.decayRate}`)
+  }
+  if (config.weightRecency < 0) {
+    errors.push(`weightRecency must be >= 0, got ${config.weightRecency}`)
+  }
+  if (config.weightImportance < 0) {
+    errors.push(`weightImportance must be >= 0, got ${config.weightImportance}`)
+  }
+  if (config.weightRelevance < 0) {
+    errors.push(`weightRelevance must be >= 0, got ${config.weightRelevance}`)
+  }
+  if (config.embeddingDimensions <= 0) {
+    errors.push(`embeddingDimensions must be > 0, got ${config.embeddingDimensions}`)
+  }
+  if (config.reflectionThreshold < 0) {
+    errors.push(`reflectionThreshold must be >= 0, got ${config.reflectionThreshold}`)
+  }
+  if (config.mergeSimilarityThreshold < 0 || config.mergeSimilarityThreshold > 1) {
+    errors.push(`mergeSimilarityThreshold must be in [0, 1], got ${config.mergeSimilarityThreshold}`)
+  }
+  if (config.pruneAgeDays <= 0) {
+    errors.push(`pruneAgeDays must be > 0, got ${config.pruneAgeDays}`)
+  }
+  if (config.consolidationInterval <= 0) {
+    errors.push(`consolidationInterval must be > 0, got ${config.consolidationInterval}`)
+  }
+
+  if (errors.length > 0) {
+    throw new Error(`Invalid configuration:\n  - ${errors.join('\n  - ')}`)
+  }
 }

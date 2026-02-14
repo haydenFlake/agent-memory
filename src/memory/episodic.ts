@@ -2,6 +2,7 @@ import type { Config } from '../core/config.js'
 import type { EmbeddingProvider, EventType, MemoryEvent, TimeRange } from '../core/types.js'
 import { generateId } from '../core/ulid.js'
 import { logger } from '../utils/logger.js'
+import { clamp } from '../utils/validation.js'
 import type { LanceStorage } from '../storage/lance.js'
 import type { SqliteStorage } from '../storage/sqlite.js'
 import { ImportanceScorer } from './importance.js'
@@ -39,6 +40,7 @@ export class EpisodicMemory {
     if (params.importance === undefined && this.importance.enabled) {
       importance = await this.importance.score(params.content)
     }
+    importance = clamp(importance, 0, 1)
 
     const event: MemoryEvent = {
       id,

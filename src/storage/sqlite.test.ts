@@ -52,6 +52,19 @@ describe('SqliteStorage', () => {
       expect(results.some(r => r.content.includes('project deadline'))).toBe(true)
     })
 
+    it('removes FTS entry when event is deleted', () => {
+      const event = makeEvent({ content: 'unique phrase for FTS deletion test' })
+      db.insertEvent(event)
+
+      const before = db.searchEventsFts('unique phrase for FTS deletion test', 10)
+      expect(before).toHaveLength(1)
+
+      db.deleteEvent(event.id)
+
+      const after = db.searchEventsFts('unique phrase for FTS deletion test', 10)
+      expect(after).toHaveLength(0)
+    })
+
     it('retrieves events by time range', () => {
       db.insertEvent(makeEvent({ created_at: '2025-01-01T00:00:00Z' }))
       db.insertEvent(makeEvent({ created_at: '2025-06-15T00:00:00Z' }))
@@ -358,6 +371,28 @@ describe('SqliteStorage', () => {
       db.touchReflection(id)
       const reflections = db.getReflections()
       expect(reflections[0].access_count).toBe(1)
+    })
+
+    it('retrieves reflection by ID', () => {
+      const id = generateId()
+      db.insertReflection({
+        id,
+        content: 'Direct lookup test',
+        source_ids: ['e1'],
+        importance: 0.6,
+        depth: 1,
+        created_at: new Date().toISOString(),
+        accessed_at: null,
+        access_count: 0,
+      })
+
+      const reflection = db.getReflectionById(id)
+      expect(reflection).not.toBeNull()
+      expect(reflection!.content).toBe('Direct lookup test')
+    })
+
+    it('returns null for non-existent reflection ID', () => {
+      expect(db.getReflectionById('nonexistent')).toBeNull()
     })
   })
 

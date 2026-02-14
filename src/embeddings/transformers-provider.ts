@@ -38,7 +38,13 @@ export class TransformersEmbeddingProvider implements EmbeddingProvider {
     await this.ensureLoaded()
     const pipe = this.pipeline as (input: string, options: { pooling: string; normalize: boolean }) => Promise<{ tolist: () => number[][] }>
     const output = await pipe(text, { pooling: 'mean', normalize: true })
-    return output.tolist()[0]
+    const embedding = output.tolist()[0]
+    if (embedding.length !== this.dims) {
+      throw new EmbeddingError(
+        `Embedding dimension mismatch: expected ${this.dims}, got ${embedding.length}`,
+      )
+    }
+    return embedding
   }
 
   async embedBatch(texts: string[]): Promise<number[][]> {

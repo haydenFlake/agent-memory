@@ -10,6 +10,7 @@ import type {
   Reflection,
   Relation,
 } from '../core/types.js'
+import { logger } from '../utils/logger.js'
 
 export class SqliteStorage {
   private db: Database.Database
@@ -20,6 +21,8 @@ export class SqliteStorage {
     this.db = new Database(dbPath)
     this.db.pragma('journal_mode = WAL')
     this.db.pragma('foreign_keys = ON')
+    this.db.pragma('busy_timeout = 5000')
+    this.db.pragma('wal_autocheckpoint = 1000')
     this.migrate()
   }
 
@@ -63,6 +66,10 @@ export class SqliteStorage {
 
       CREATE TRIGGER IF NOT EXISTS events_ai AFTER INSERT ON events BEGIN
         INSERT INTO events_fts(rowid, content) VALUES (new.rowid, new.content);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS events_ad AFTER DELETE ON events BEGIN
+        DELETE FROM events_fts WHERE rowid = old.rowid;
       END;
 
       CREATE TABLE IF NOT EXISTS core_memory (
@@ -388,6 +395,11 @@ export class SqliteStorage {
     return rows.map(r => this.rowToReflection(r))
   }
 
+  getReflectionById(id: string): Reflection | null {
+    const row = this.db.prepare('SELECT * FROM reflections WHERE id = ?').get(id) as Record<string, unknown> | undefined
+    return row ? this.rowToReflection(row) : null
+  }
+
   touchReflection(id: string): void {
     this.db.prepare(`
       UPDATE reflections SET accessed_at = datetime('now'), access_count = access_count + 1 WHERE id = ?
@@ -444,7 +456,8 @@ export class SqliteStorage {
     if (typeof value !== 'string' || !value) return fallback
     try {
       return JSON.parse(value) as T
-    } catch {
+    } catch (err) {
+      logger.warn('JSON parse failed in row converter, using fallback', { value: String(value).slice(0, 100), error: err })
       return fallback
     }
   }

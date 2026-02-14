@@ -2,6 +2,8 @@ import * as lancedb from '@lancedb/lancedb'
 import { mkdirSync } from 'fs'
 import { join } from 'path'
 import type { Config } from '../core/config.js'
+import { StorageError } from '../core/errors.js'
+import { isValidUlid } from '../utils/validation.js'
 
 interface VectorRecord {
   [key: string]: unknown
@@ -64,6 +66,9 @@ export class LanceStorage {
     content: string,
     createdAt: string,
   ): Promise<void> {
+    if (!isValidUlid(memoryId)) {
+      throw new StorageError(`Invalid memory ID format: ${memoryId}`)
+    }
     const table = await this.ensureTable()
     const record: VectorRecord = {
       vector,
@@ -83,6 +88,11 @@ export class LanceStorage {
     createdAt: string
   }>): Promise<void> {
     if (records.length === 0) return
+    for (const r of records) {
+      if (!isValidUlid(r.memoryId)) {
+        throw new StorageError(`Invalid memory ID format: ${r.memoryId}`)
+      }
+    }
     const table = await this.ensureTable()
     const vectorRecords: VectorRecord[] = records.map(r => ({
       vector: r.vector,
@@ -122,6 +132,9 @@ export class LanceStorage {
   }
 
   async delete(memoryId: string): Promise<void> {
+    if (!isValidUlid(memoryId)) {
+      throw new StorageError(`Invalid memory ID format: ${memoryId}`)
+    }
     const table = await this.ensureTable()
     await table.delete(`memory_id = "${memoryId}"`)
   }

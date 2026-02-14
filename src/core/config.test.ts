@@ -53,4 +53,39 @@ describe('loadConfig', () => {
     expect(config.decayRate).toBe(0.995)
     expect(config.embeddingDimensions).toBe(384)
   })
+
+  it('throws on decayRate out of (0, 1) range', () => {
+    expect(() => loadConfig({ decayRate: 0 })).toThrow('decayRate must be in (0, 1)')
+    expect(() => loadConfig({ decayRate: 1 })).toThrow('decayRate must be in (0, 1)')
+    expect(() => loadConfig({ decayRate: 1.5 })).toThrow('decayRate must be in (0, 1)')
+    expect(() => loadConfig({ decayRate: -0.1 })).toThrow('decayRate must be in (0, 1)')
+  })
+
+  it('throws on embeddingDimensions <= 0', () => {
+    expect(() => loadConfig({ embeddingDimensions: 0 })).toThrow('embeddingDimensions must be > 0')
+    expect(() => loadConfig({ embeddingDimensions: -1 })).toThrow('embeddingDimensions must be > 0')
+  })
+
+  it('throws on negative weights', () => {
+    expect(() => loadConfig({ weightRecency: -1 })).toThrow('weightRecency must be >= 0')
+    expect(() => loadConfig({ weightImportance: -0.1 })).toThrow('weightImportance must be >= 0')
+    expect(() => loadConfig({ weightRelevance: -5 })).toThrow('weightRelevance must be >= 0')
+  })
+
+  it('throws on mergeSimilarityThreshold out of [0, 1]', () => {
+    expect(() => loadConfig({ mergeSimilarityThreshold: -0.1 })).toThrow('mergeSimilarityThreshold must be in [0, 1]')
+    expect(() => loadConfig({ mergeSimilarityThreshold: 1.1 })).toThrow('mergeSimilarityThreshold must be in [0, 1]')
+  })
+
+  it('throws on pruneAgeDays <= 0', () => {
+    expect(() => loadConfig({ pruneAgeDays: 0 })).toThrow('pruneAgeDays must be > 0')
+  })
+
+  it('throws on consolidationInterval <= 0', () => {
+    expect(() => loadConfig({ consolidationInterval: 0 })).toThrow('consolidationInterval must be > 0')
+  })
+
+  it('collects multiple validation errors', () => {
+    expect(() => loadConfig({ decayRate: 2, embeddingDimensions: 0, weightRecency: -1 })).toThrow('Invalid configuration')
+  })
 })
