@@ -76,9 +76,24 @@ export interface Reflection {
   access_count: number
 }
 
+export type TaskPhase = 'start' | 'in_progress' | 'completed' | 'blocked'
+
+export interface TaskContextEntry {
+  id: string
+  agent_id: string
+  task_id: string
+  title: string
+  phase: TaskPhase
+  content: string
+  importance: number
+  created_at: string
+  accessed_at: string | null
+  access_count: number
+}
+
 export interface ScoredMemory {
   id: string
-  source: 'event' | 'entity' | 'reflection'
+  source: 'event' | 'entity' | 'reflection' | 'task'
   content: string
   score: number
   recency_score: number
@@ -104,6 +119,7 @@ export interface MemoryStats {
   entity_count: number
   relation_count: number
   reflection_count: number
+  task_context_count: number
   core_memory_blocks: number
   last_reflection_at: string | null
   last_consolidation_at: string | null

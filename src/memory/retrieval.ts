@@ -1,5 +1,5 @@
 import type { Config } from '../core/config.js'
-import type { EmbeddingProvider, Entity, MemoryEvent, RecallResult, Reflection, ScoredMemory } from '../core/types.js'
+import type { EmbeddingProvider, Entity, MemoryEvent, RecallResult, Reflection, ScoredMemory, TaskContextEntry } from '../core/types.js'
 import type { LanceStorage } from '../storage/lance.js'
 import type { SqliteStorage } from '../storage/sqlite.js'
 import { logger } from '../utils/logger.js'
@@ -44,15 +44,17 @@ export class RetrievalEngine {
     const eventIds = vectorResults.filter(r => r.memory_type === 'event').map(r => r.memory_id)
     const entityIds = vectorResults.filter(r => r.memory_type === 'entity').map(r => r.memory_id)
     const reflectionIds = vectorResults.filter(r => r.memory_type === 'reflection').map(r => r.memory_id)
+    const taskIds = vectorResults.filter(r => r.memory_type === 'task').map(r => r.memory_id)
 
     const events = this.sqlite.getEventsByIds(eventIds)
     const entities = this.sqlite.getEntitiesByIds(entityIds)
     const reflections = this.sqlite.getReflectionsByIds(reflectionIds)
+    const tasks = this.sqlite.getTaskContextsByIds(taskIds)
 
     const scoredMemories: ScoredMemory[] = []
 
     for (const result of vectorResults) {
-      const memory = this.resolveMemoryFromMaps(result.memory_id, result.memory_type, events, entities, reflections)
+      const memory = this.resolveMemoryFromMaps(result.memory_id, result.memory_type, events, entities, reflections, tasks)
       if (!memory) {
         logger.warn(`Vector record has no matching SQLite record: ${result.memory_type}:${result.memory_id}`)
         continue
@@ -61,6 +63,11 @@ export class RetrievalEngine {
       if (params.agent_id && result.memory_type === 'event') {
         const event = events.get(result.memory_id)
         if (event && event.agent_id !== params.agent_id) continue
+      }
+
+      if (params.agent_id && result.memory_type === 'task') {
+        const task = tasks.get(result.memory_id)
+        if (task && task.agent_id !== params.agent_id) continue
       }
 
       // 1 - distance/2 maps L2 distance [0,2] to relevance [0,1]
@@ -111,10 +118,11 @@ export class RetrievalEngine {
 
   private resolveMemoryFromMaps(
     id: string,
-    type: 'event' | 'entity' | 'reflection',
+    type: 'event' | 'entity' | 'reflection' | 'task',
     events: Map<string, MemoryEvent>,
     entities: Map<string, Entity>,
     reflections: Map<string, Reflection>,
+    tasks: Map<string, TaskContextEntry>,
   ): { content: string; importance: number; created_at: string; accessed_at: string | null; metadata?: Record<string, unknown> } | null {
     switch (type) {
       case 'event': {
@@ -153,13 +161,24 @@ export class RetrievalEngine {
           accessed_at: reflection.accessed_at,
         }
       }
+      case 'task': {
+        const task = tasks.get(id)
+        if (!task) return null
+        return {
+          content: `[Task: ${task.title} | ${task.phase}] ${task.content}`,
+          importance: task.importance,
+          created_at: task.created_at,
+          accessed_at: task.accessed_at,
+          metadata: { task_id: task.task_id, phase: task.phase, title: task.title },
+        }
+      }
       default:
         return null
     }
   }
 
   // Updates accessed_at on recall — creates intentional reinforcement: frequently recalled memories stay fresh
-  private touchMemory(id: string, type: 'event' | 'entity' | 'reflection'): void {
+  private touchMemory(id: string, type: 'event' | 'entity' | 'reflection' | 'task'): void {
     switch (type) {
       case 'event':
         this.sqlite.touchEvent(id)
@@ -169,6 +188,9 @@ export class RetrievalEngine {
         break
       case 'reflection':
         this.sqlite.touchReflection(id)
+        break
+      case 'task':
+        this.sqlite.touchTaskContext(id)
         break
     }
   }

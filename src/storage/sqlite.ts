@@ -11,6 +11,7 @@ import type {
   MemoryStats,
   Reflection,
   Relation,
+  TaskContextEntry,
 } from '../core/types.js'
 import { logger } from '../utils/logger.js'
 
@@ -129,6 +130,23 @@ export class SqliteStorage {
 
       CREATE INDEX IF NOT EXISTS idx_reflections_importance ON reflections(importance);
       CREATE INDEX IF NOT EXISTS idx_reflections_depth ON reflections(depth);
+
+      CREATE TABLE IF NOT EXISTS task_context (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        phase TEXT NOT NULL,
+        content TEXT NOT NULL,
+        importance REAL DEFAULT 0.6,
+        created_at TEXT NOT NULL,
+        accessed_at TEXT,
+        access_count INTEGER DEFAULT 0
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_task_context_agent_task ON task_context(agent_id, task_id);
+      CREATE INDEX IF NOT EXISTS idx_task_context_task ON task_context(task_id);
+      CREATE INDEX IF NOT EXISTS idx_task_context_phase ON task_context(phase);
 
       CREATE TABLE IF NOT EXISTS state (
         key TEXT PRIMARY KEY,
@@ -470,6 +488,57 @@ export class SqliteStorage {
     return (this.db.prepare('SELECT COUNT(*) as c FROM reflections').get() as { c: number }).c
   }
 
+  // --- Task Context ---
+
+  insertTaskContext(entry: TaskContextEntry): void {
+    this.db.prepare(`
+      INSERT INTO task_context (id, agent_id, task_id, title, phase, content, importance, created_at, accessed_at, access_count)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      entry.id,
+      entry.agent_id,
+      entry.task_id,
+      entry.title,
+      entry.phase,
+      entry.content,
+      entry.importance,
+      entry.created_at,
+      entry.accessed_at,
+      entry.access_count,
+    )
+  }
+
+  getTaskContextByTaskId(agentId: string, taskId: string): TaskContextEntry[] {
+    const rows = this.db.prepare(
+      'SELECT * FROM task_context WHERE agent_id = ? AND task_id = ? ORDER BY created_at ASC',
+    ).all(agentId, taskId) as Record<string, unknown>[]
+    return rows.map(r => this.rowToTaskContext(r))
+  }
+
+  getTaskContextsByIds(ids: string[]): Map<string, TaskContextEntry> {
+    if (ids.length === 0) return new Map()
+    const placeholders = ids.map(() => '?').join(',')
+    const rows = this.db.prepare(
+      `SELECT * FROM task_context WHERE id IN (${placeholders})`,
+    ).all(...ids) as Record<string, unknown>[]
+    const map = new Map<string, TaskContextEntry>()
+    for (const row of rows) {
+      const entry = this.rowToTaskContext(row)
+      map.set(entry.id, entry)
+    }
+    return map
+  }
+
+  touchTaskContext(id: string): void {
+    this.db.prepare(`
+      UPDATE task_context SET accessed_at = datetime('now'), access_count = access_count + 1 WHERE id = ?
+    `).run(id)
+  }
+
+  getTaskContextCount(): number {
+    return (this.db.prepare('SELECT COUNT(*) as c FROM task_context').get() as { c: number }).c
+  }
+
   // --- State ---
 
   setState(key: string, value: string): void {
@@ -490,6 +559,7 @@ export class SqliteStorage {
         (SELECT COUNT(*) FROM entities) as entity_count,
         (SELECT COUNT(*) FROM relations) as relation_count,
         (SELECT COUNT(*) FROM reflections) as reflection_count,
+        (SELECT COUNT(*) FROM task_context) as task_context_count,
         (SELECT COUNT(*) FROM core_memory) as core_blocks,
         (SELECT created_at FROM events ORDER BY created_at ASC LIMIT 1) as oldest_event,
         (SELECT created_at FROM events ORDER BY created_at DESC LIMIT 1) as newest_event
@@ -498,6 +568,7 @@ export class SqliteStorage {
       entity_count: number
       relation_count: number
       reflection_count: number
+      task_context_count: number
       core_blocks: number
       oldest_event: string | null
       newest_event: string | null
@@ -508,6 +579,7 @@ export class SqliteStorage {
       entity_count: row.entity_count,
       relation_count: row.relation_count,
       reflection_count: row.reflection_count,
+      task_context_count: row.task_context_count,
       core_memory_blocks: row.core_blocks,
       last_reflection_at: this.getState(stateKeys.lastReflectionAt),
       last_consolidation_at: this.getState(stateKeys.lastConsolidationAt),
@@ -587,6 +659,21 @@ export class SqliteStorage {
       source_ids: this.safeJsonParse<string[]>(row.source_ids, []),
       importance: row.importance as number,
       depth: (row.depth as number) || 1,
+      created_at: row.created_at as string,
+      accessed_at: (row.accessed_at as string) || null,
+      access_count: (row.access_count as number) || 0,
+    }
+  }
+
+  private rowToTaskContext(row: Record<string, unknown>): TaskContextEntry {
+    return {
+      id: row.id as string,
+      agent_id: row.agent_id as string,
+      task_id: row.task_id as string,
+      title: row.title as string,
+      phase: row.phase as TaskContextEntry['phase'],
+      content: row.content as string,
+      importance: row.importance as number,
       created_at: row.created_at as string,
       accessed_at: (row.accessed_at as string) || null,
       access_count: (row.access_count as number) || 0,

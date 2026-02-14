@@ -5,18 +5,20 @@ import type { Config } from '../core/config.js'
 import { StorageError } from '../core/errors.js'
 import { isValidUlid } from '../utils/validation.js'
 
+type MemoryType = 'event' | 'entity' | 'reflection' | 'task'
+
 interface VectorRecord {
   [key: string]: unknown
   vector: number[]
   memory_id: string
-  memory_type: 'event' | 'entity' | 'reflection'
+  memory_type: MemoryType
   content: string
   created_at: string
 }
 
 export interface VectorSearchResult {
   memory_id: string
-  memory_type: 'event' | 'entity' | 'reflection'
+  memory_type: MemoryType
   content: string
   created_at: string
   distance: number
@@ -71,7 +73,7 @@ export class LanceStorage {
 
   async add(
     memoryId: string,
-    memoryType: 'event' | 'entity' | 'reflection',
+    memoryType: MemoryType,
     vector: number[],
     content: string,
     createdAt: string,
@@ -95,7 +97,7 @@ export class LanceStorage {
 
   async addBatch(records: Array<{
     memoryId: string
-    memoryType: 'event' | 'entity' | 'reflection'
+    memoryType: MemoryType
     vector: number[]
     content: string
     createdAt: string
@@ -123,13 +125,13 @@ export class LanceStorage {
   async search(
     queryVector: number[],
     limit: number = 20,
-    memoryType?: 'event' | 'entity' | 'reflection',
+    memoryType?: MemoryType,
   ): Promise<VectorSearchResult[]> {
     const table = await this.ensureTable()
     let query = table.search(queryVector).limit(limit)
 
     if (memoryType) {
-      const allowed = ['event', 'entity', 'reflection'] as const
+      const allowed: readonly string[] = ['event', 'entity', 'reflection', 'task']
       if (!allowed.includes(memoryType)) {
         throw new Error(`Invalid memory_type: ${memoryType}`)
       }
@@ -141,7 +143,7 @@ export class LanceStorage {
 
     return results.map(row => ({
       memory_id: row.memory_id as string,
-      memory_type: row.memory_type as 'event' | 'entity' | 'reflection',
+      memory_type: row.memory_type as MemoryType,
       content: row.content as string,
       created_at: row.created_at as string,
       distance: (row._distance as number) ?? 0,

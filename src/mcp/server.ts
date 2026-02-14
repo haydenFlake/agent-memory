@@ -2,12 +2,13 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 import type { Config } from '../core/config.js'
-import type { EmbeddingProvider, EventType, EntityType } from '../core/types.js'
+import type { EmbeddingProvider, EventType, EntityType, TaskPhase } from '../core/types.js'
 import { EpisodicMemory } from '../memory/episodic.js'
 import { SemanticMemory } from '../memory/semantic.js'
 import { RetrievalEngine } from '../memory/retrieval.js'
 import { ReflectionEngine } from '../memory/reflection.js'
 import { ConsolidationEngine } from '../memory/consolidation.js'
+import { TaskMemory } from '../memory/task.js'
 import type { SqliteStorage } from '../storage/sqlite.js'
 import type { LanceStorage } from '../storage/lance.js'
 import { generateId } from '../core/ulid.js'
@@ -44,6 +45,7 @@ export async function createMcpServer(
   const retrieval = new RetrievalEngine(sqlite, lance, embeddings, config)
   const reflection = new ReflectionEngine(sqlite, lance, embeddings, config)
   const consolidation = new ConsolidationEngine(sqlite, lance, embeddings, config)
+  const taskMemory = new TaskMemory(sqlite, lance, embeddings, config)
 
   const server = new McpServer({
     name: 'agent-memory',
@@ -458,6 +460,78 @@ export async function createMcpServer(
     }),
   )
 
+  // ========== TASK CONTEXT TOOLS ==========
+
+  server.tool(
+    'record_task_context',
+    'Record your personal context about a task — your approach, decisions, blockers, or outcome. Use this at task start, when making key decisions, when blocked, and after completing a task. This is YOUR memory about the task, separate from the shared task queue.',
+    {
+      agent_id: z.string().min(1).max(255).describe('Your agent identifier'),
+      task_id: z.string().min(1).max(255).describe('The task ID from the task queue'),
+      title: z.string().min(1).max(500).describe('Task title (for searchability)'),
+      phase: z.enum(['start', 'in_progress', 'completed', 'blocked']).describe('Current phase of your work on this task'),
+      content: z.string().min(1).max(10000).describe('What happened — your approach, decision, blocker, or outcome'),
+      importance: z.number().min(0).max(1).optional().describe('Override importance (default: 0.6 start, 0.7 in_progress, 0.8 completed)'),
+    },
+    withErrorHandling(async (args) => {
+      const entry = await taskMemory.recordTaskContext({
+        agent_id: args.agent_id,
+        task_id: args.task_id,
+        title: args.title,
+        phase: args.phase as TaskPhase,
+        content: args.content,
+        importance: args.importance,
+      })
+
+      return {
+        content: [{
+          type: 'text' as const,
+          text: formatXml('task_context_recorded', {
+            id: entry.id,
+            task_id: entry.task_id,
+            phase: entry.phase,
+            importance: entry.importance.toFixed(2),
+            created_at: entry.created_at,
+          }),
+        }],
+      }
+    }),
+  )
+
+  server.tool(
+    'recall_task_context',
+    'Recall all your personal context about a specific task — your prior approach, decisions, blockers, and outcomes, in chronological order. Use this when starting work on a task to reload your context.',
+    {
+      agent_id: z.string().min(1).max(255).describe('Your agent identifier'),
+      task_id: z.string().min(1).max(255).describe('The task ID to recall context for'),
+    },
+    withErrorHandling(async (args) => {
+      const entries = taskMemory.recallTaskContext({
+        agent_id: args.agent_id,
+        task_id: args.task_id,
+      })
+
+      if (entries.length === 0) {
+        return {
+          content: [{ type: 'text' as const, text: '<task_context task_id="' + escapeXml(args.task_id) + '" count="0">No prior context found for this task.</task_context>' }],
+        }
+      }
+
+      const formatted = entries.map(e =>
+        `<entry id="${escapeXml(e.id)}" phase="${escapeXml(e.phase)}" importance="${e.importance.toFixed(2)}" at="${escapeXml(e.created_at)}">\n${escapeXml(e.content)}\n</entry>`,
+      ).join('\n\n')
+
+      return {
+        content: [{
+          type: 'text' as const,
+          text: `<task_context task_id="${escapeXml(args.task_id)}" title="${escapeXml(entries[0].title)}" count="${entries.length}">\n${formatted}\n</task_context>`,
+        }],
+      }
+    }),
+  )
+
+  // ========== MEMORY MANAGEMENT TOOLS ==========
+
   server.tool(
     'memory_status',
     'Get memory system statistics including event count, entity count, last reflection time, and storage health.',
@@ -471,6 +545,7 @@ export async function createMcpServer(
   <entities>${stats.entity_count}</entities>
   <relations>${stats.relation_count}</relations>
   <reflections>${stats.reflection_count}</reflections>
+  <task_context_entries>${stats.task_context_count}</task_context_entries>
   <core_memory_blocks>${stats.core_memory_blocks}</core_memory_blocks>
   <vector_embeddings>${vectorCount}</vector_embeddings>
   <last_reflection>${escapeXml(stats.last_reflection_at ?? 'never')}</last_reflection>
