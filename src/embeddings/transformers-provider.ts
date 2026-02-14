@@ -14,24 +14,26 @@ export class TransformersEmbeddingProvider implements EmbeddingProvider {
 
   private async ensureLoaded(): Promise<void> {
     if (this.pipeline) return
-    if (this.loading) {
-      await this.loading
-      return
+    if (!this.loading) {
+      this.loading = this._doLoad()
     }
-
-    this.loading = (async () => {
-      try {
-        const { pipeline } = await import('@huggingface/transformers')
-        this.pipeline = await pipeline('feature-extraction', this.model, {
-          dtype: 'fp32',
-        })
-      } catch (err) {
-        this.loading = null
-        throw new EmbeddingError(`Failed to load embedding model ${this.model}: ${err}`)
-      }
-    })()
-
     await this.loading
+  }
+
+  private async _doLoad(): Promise<void> {
+    try {
+      const { pipeline } = await import('@huggingface/transformers')
+      this.pipeline = await pipeline('feature-extraction', this.model, {
+        dtype: 'fp32',
+      })
+    } catch (err) {
+      throw new EmbeddingError(`Failed to load embedding model ${this.model}: ${err}`)
+    }
+  }
+
+  reset(): void {
+    this.pipeline = null
+    this.loading = null
   }
 
   async embed(text: string): Promise<number[]> {
@@ -47,6 +49,7 @@ export class TransformersEmbeddingProvider implements EmbeddingProvider {
     return embedding
   }
 
+  // Sequential batches are optimal for local models — parallel calls contend for the same model weights
   async embedBatch(texts: string[]): Promise<number[][]> {
     if (texts.length === 0) return []
 

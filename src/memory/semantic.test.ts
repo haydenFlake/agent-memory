@@ -130,6 +130,29 @@ describe('SemanticMemory', () => {
       const blocks = semantic.getCoreMemory('persona')
       expect(blocks[0].content.length).toBeLessThanOrEqual(5000)
     })
+
+    it('append truncation preserves the beginning, not the tail', () => {
+      const beginning = 'BEGINNING_MARKER'
+      semantic.updateCoreMemory({
+        block_type: 'persona',
+        block_key: 'default',
+        operation: 'replace',
+        content: beginning,
+      })
+
+      // Append enough to exceed the 5000 char limit
+      const longAppend = 'y'.repeat(5000)
+      semantic.updateCoreMemory({
+        block_type: 'persona',
+        block_key: 'default',
+        operation: 'append',
+        content: longAppend,
+      })
+
+      const blocks = semantic.getCoreMemory('persona')
+      expect(blocks[0].content.startsWith(beginning)).toBe(true)
+      expect(blocks[0].content.length).toBeLessThanOrEqual(5000)
+    })
   })
 
   describe('entities', () => {

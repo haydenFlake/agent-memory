@@ -12,16 +12,19 @@ export async function runConsolidate(config: Config, maxAgeDays?: number): Promi
     config.embeddingDimensions,
   )
 
-  const consolidation = new ConsolidationEngine(sqlite, lance, embeddings, config)
+  try {
+    const consolidation = new ConsolidationEngine(sqlite, lance, embeddings, config)
 
-  console.log(`Running consolidation${maxAgeDays ? ` (max age: ${maxAgeDays} days)` : ''}...`)
+    console.log(`Running consolidation${maxAgeDays ? ` (max age: ${maxAgeDays} days)` : ''}...`)
 
-  const result = await consolidation.consolidate(maxAgeDays)
+    const result = await consolidation.consolidate(maxAgeDays)
 
-  console.log('\nConsolidation complete:')
-  console.log(`  Entities updated:      ${result.entities_updated}`)
-  console.log(`  Observations pruned:   ${result.observations_pruned}`)
-  console.log(`  Summaries refreshed:   ${result.summaries_refreshed}`)
-
-  sqlite.close()
+    console.log('\nConsolidation complete:')
+    console.log(`  Entities updated:      ${result.entities_updated}`)
+    console.log(`  Observations pruned:   ${result.observations_pruned}`)
+    console.log(`  Summaries refreshed:   ${result.summaries_refreshed}`)
+  } finally {
+    sqlite.close()
+    lance.close()
+  }
 }

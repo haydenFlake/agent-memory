@@ -114,6 +114,29 @@ describe('EpisodicMemory', () => {
       expect(sqlite.getEventCount()).toBe(0)
       expect(lance.records).toHaveLength(0)
     })
+
+    it('embed failure leaves zero orphans in both stores', async () => {
+      // First, record a successful event
+      await episodic.recordEvent({
+        agent_id: 'agent-1',
+        event_type: 'observation',
+        content: 'Successful event',
+      })
+      expect(sqlite.getEventCount()).toBe(1)
+      expect(lance.records).toHaveLength(1)
+
+      // Now fail on embed — embed-first means sqlite is never written
+      embeddings.shouldFail = true
+      await expect(episodic.recordEvent({
+        agent_id: 'agent-1',
+        event_type: 'observation',
+        content: 'This will fail on embed',
+      })).rejects.toThrow('Embedding failed')
+
+      // The original event is still intact, but the failed one left no trace
+      expect(sqlite.getEventCount()).toBe(1)
+      expect(lance.records).toHaveLength(1)
+    })
   })
 
   describe('searchEvents', () => {
@@ -178,6 +201,38 @@ describe('EpisodicMemory', () => {
         limit: 1,
       })
       expect(results.length).toBeLessThanOrEqual(1)
+    })
+
+    it('uses exact entity matching (not substring)', async () => {
+      await episodic.recordEvent({
+        agent_id: 'agent-1',
+        event_type: 'observation',
+        content: 'FAIR conference notes',
+        entities: ['FAIR'],
+      })
+      await episodic.recordEvent({
+        agent_id: 'agent-1',
+        event_type: 'observation',
+        content: 'AI discussion topic',
+        entities: ['AI'],
+      })
+
+      // Search for entity "AI" should NOT match "FAIR"
+      const results = await episodic.searchEvents({
+        query: 'topic',
+        entities: ['AI'],
+      })
+
+      const entityLists = results.map(r => r.entities)
+      for (const entities of entityLists) {
+        expect(entities.some(e => e.toLowerCase() === 'ai')).toBe(true)
+      }
+
+      // Verify FAIR-only events are excluded
+      const fairOnly = results.filter(r =>
+        r.entities.some(e => e === 'FAIR') && !r.entities.some(e => e === 'AI'),
+      )
+      expect(fairOnly).toHaveLength(0)
     })
   })
 

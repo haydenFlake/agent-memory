@@ -1,7 +1,6 @@
 import type { Config } from '../core/config.js'
 import type { EmbeddingProvider, EventType, MemoryEvent, TimeRange } from '../core/types.js'
 import { generateId } from '../core/ulid.js'
-import { logger } from '../utils/logger.js'
 import { clamp } from '../utils/validation.js'
 import type { LanceStorage } from '../storage/lance.js'
 import type { SqliteStorage } from '../storage/sqlite.js'
@@ -55,10 +54,11 @@ export class EpisodicMemory {
       access_count: 0,
     }
 
+    const vector = await this.embeddings.embed(params.content)
+
     this.sqlite.insertEvent(event)
 
     try {
-      const vector = await this.embeddings.embed(params.content)
       await this.lance.add(id, 'event', vector, params.content, now)
     } catch (err) {
       this.sqlite.deleteEvent(id)
@@ -79,19 +79,19 @@ export class EpisodicMemory {
     const limit = params.limit ?? 20
 
     const queryVector = await this.embeddings.embed(params.query)
+    // Search uses distance-only ranking. For weighted scoring, use RetrievalEngine.recall().
+    // 2x buffer: search applies lighter filtering (agent_id, type, time) than recall
     const vectorResults = await this.lance.search(queryVector, limit * 2, 'event')
     const vectorIds = new Set(vectorResults.map(r => r.memory_id))
 
     const ftsResults = this.sqlite.searchEventsFts(params.query, limit)
     const ftsIds = new Set(ftsResults.map(r => r.id))
 
-    const allIds = new Set([...vectorIds, ...ftsIds])
+    const allIds = [...new Set([...vectorIds, ...ftsIds])]
+    const eventMap = this.sqlite.getEventsByIds(allIds)
     const events: MemoryEvent[] = []
 
-    for (const id of allIds) {
-      const event = this.sqlite.getEvent(id)
-      if (!event) continue
-
+    for (const [id, event] of eventMap) {
       if (params.agent_id && event.agent_id !== params.agent_id) continue
       if (params.event_type && event.event_type !== params.event_type) continue
       if (params.time_range) {
@@ -100,7 +100,7 @@ export class EpisodicMemory {
       }
       if (params.entities && params.entities.length > 0) {
         const hasEntity = params.entities.some(e =>
-          event.entities.some(ee => ee.toLowerCase().includes(e.toLowerCase())),
+          event.entities.some(ee => ee.toLowerCase() === e.toLowerCase()),
         )
         if (!hasEntity) continue
       }

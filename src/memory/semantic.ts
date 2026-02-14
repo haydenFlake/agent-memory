@@ -46,7 +46,7 @@ export class SemanticMemory {
         const current = existing?.content ?? ''
         newContent = current ? `${current}\n${params.content}` : params.content
         if (newContent.length > CORE_MEMORY_MAX_CHARS) {
-          newContent = newContent.slice(-CORE_MEMORY_MAX_CHARS)
+          newContent = newContent.slice(0, CORE_MEMORY_MAX_CHARS)
         }
         break
       }
@@ -86,30 +86,35 @@ export class SemanticMemory {
     entity_type: EntityType
     observations?: string[]
     summary?: string
+    importance?: number
   }): Promise<Entity> {
     const now = new Date().toISOString()
-    const existing = this.sqlite.getEntity(params.name)
 
-    const mergedObservations = existing
-      ? [...existing.observations, ...(params.observations ?? [])]
-      : params.observations ?? []
+    const entity = this.sqlite.transaction(() => {
+      const existing = this.sqlite.getEntity(params.name)
 
-    const uniqueObservations = [...new Set(mergedObservations)]
+      const mergedObservations = existing
+        ? [...existing.observations, ...(params.observations ?? [])]
+        : params.observations ?? []
 
-    const entity: Entity = {
-      id: existing?.id ?? generateId(),
-      name: params.name,
-      entity_type: params.entity_type,
-      summary: params.summary ?? existing?.summary ?? null,
-      observations: uniqueObservations,
-      importance: existing?.importance ?? 0.5,
-      created_at: existing?.created_at ?? now,
-      updated_at: now,
-      accessed_at: existing?.accessed_at ?? null,
-      access_count: existing?.access_count ?? 0,
-    }
+      const uniqueObservations = [...new Set(mergedObservations)]
 
-    this.sqlite.upsertEntity(entity)
+      const ent: Entity = {
+        id: existing?.id ?? generateId(),
+        name: params.name,
+        entity_type: params.entity_type,
+        summary: params.summary ?? existing?.summary ?? null,
+        observations: uniqueObservations,
+        importance: params.importance ?? existing?.importance ?? 0.5,
+        created_at: existing?.created_at ?? now,
+        updated_at: now,
+        accessed_at: existing?.accessed_at ?? null,
+        access_count: existing?.access_count ?? 0,
+      }
+
+      this.sqlite.upsertEntity(ent)
+      return ent
+    })
 
     const textForEmbedding = [
       entity.name,
@@ -118,9 +123,7 @@ export class SemanticMemory {
     ].join(' ')
     const vector = await this.embeddings.embed(textForEmbedding)
 
-    if (existing) {
-      await this.lance.delete(existing.id)
-    }
+    await this.lance.delete(entity.id)
     await this.lance.add(entity.id, 'entity', vector, textForEmbedding, now)
 
     return entity
@@ -196,6 +199,7 @@ export class SemanticMemory {
     const limit = params.limit ?? 10
 
     const queryVector = await this.embeddings.embed(params.query)
+    // Search uses distance-only ranking. For weighted scoring, use RetrievalEngine.recall().
     const vectorResults = await this.lance.search(queryVector, limit * 2, 'entity')
 
     const entities: Entity[] = []

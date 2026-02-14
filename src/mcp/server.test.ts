@@ -610,4 +610,246 @@ describe('MCP Server Integration', () => {
 
     expect(result.isError).toBe(true)
   })
+
+  // ========== STORE LEARNING WITH IMPORTANCE ==========
+
+  it('store_learning with explicit importance stores it correctly', async () => {
+    await client.callTool({
+      name: 'store_learning',
+      arguments: {
+        content: 'Critical insight about architecture',
+        importance: 0.9,
+      },
+    })
+
+    const entities = sqlite.getAllEntities('concept')
+    expect(entities).toHaveLength(1)
+    expect(entities[0].importance).toBe(0.9)
+  })
+
+  it('store_learning without importance uses default', async () => {
+    await client.callTool({
+      name: 'store_learning',
+      arguments: {
+        content: 'A minor observation',
+      },
+    })
+
+    const entities = sqlite.getAllEntities('concept')
+    expect(entities).toHaveLength(1)
+    expect(entities[0].importance).toBe(0.5)
+  })
+
+  // ========== DATE VALIDATION ==========
+
+  it('get_timeline rejects invalid start date', async () => {
+    const result = await client.callTool({
+      name: 'get_timeline',
+      arguments: {
+        agent_id: 'agent-1',
+        start: 'not-a-date',
+        end: '2025-12-31T00:00:00Z',
+      },
+    })
+
+    // Zod validation error returned as MCP error
+    expect(result.isError).toBe(true)
+  })
+
+  it('get_timeline rejects invalid end date', async () => {
+    const result = await client.callTool({
+      name: 'get_timeline',
+      arguments: {
+        agent_id: 'agent-1',
+        start: '2025-01-01T00:00:00Z',
+        end: 'tomorrow',
+      },
+    })
+
+    expect(result.isError).toBe(true)
+  })
+
+  it('search_events rejects invalid date in start param', async () => {
+    const result = await client.callTool({
+      name: 'search_events',
+      arguments: {
+        query: 'test',
+        start: 'invalid-date',
+      },
+    })
+
+    expect(result.isError).toBe(true)
+  })
+
+  // ========== METADATA SIZE LIMITS ==========
+
+  it('record_event rejects oversized metadata', async () => {
+    const bigMetadata: Record<string, string> = {}
+    for (let i = 0; i < 200; i++) {
+      bigMetadata[`key_${i}`] = 'x'.repeat(100)
+    }
+
+    const result = await client.callTool({
+      name: 'record_event',
+      arguments: {
+        agent_id: 'agent-1',
+        event_type: 'observation',
+        content: 'Test',
+        metadata: bigMetadata,
+      },
+    })
+
+    expect(result.isError).toBe(true)
+  })
+
+  // ========== RECALL TOUCH PARAMETER ==========
+
+  it('recall with touch=false does not update access_count', async () => {
+    const createResult = await client.callTool({
+      name: 'record_event',
+      arguments: {
+        agent_id: 'agent-1',
+        event_type: 'observation',
+        content: 'Touch test event',
+      },
+    })
+
+    const createText = getText(createResult)
+    const idMatch = createText.match(/id="([^"]+)"/)
+    const eventId = idMatch![1]
+
+    // Recall with touch=false
+    await client.callTool({
+      name: 'recall',
+      arguments: { query: 'touch test', touch: false },
+    })
+
+    const event = sqlite.getEvent(eventId)
+    expect(event!.access_count).toBe(0)
+  })
+
+  it('recall with default touch updates access_count', async () => {
+    const createResult = await client.callTool({
+      name: 'record_event',
+      arguments: {
+        agent_id: 'agent-1',
+        event_type: 'observation',
+        content: 'Touch default event',
+      },
+    })
+
+    const createText = getText(createResult)
+    const idMatch = createText.match(/id="([^"]+)"/)
+    const eventId = idMatch![1]
+
+    // Recall with default (touch=true)
+    await client.callTool({
+      name: 'recall',
+      arguments: { query: 'touch default' },
+    })
+
+    const event = sqlite.getEvent(eventId)
+    expect(event!.access_count).toBeGreaterThanOrEqual(1)
+  })
+
+  // ========== WHITESPACE QUERIES ==========
+
+  it('recall rejects whitespace-only query', async () => {
+    const result = await client.callTool({
+      name: 'recall',
+      arguments: { query: '   ' },
+    })
+
+    expect(result.isError).toBe(true)
+  })
+
+  it('search_events rejects whitespace-only query', async () => {
+    const result = await client.callTool({
+      name: 'search_events',
+      arguments: { query: '  \t  ' },
+    })
+
+    expect(result.isError).toBe(true)
+  })
+
+  it('search_knowledge rejects whitespace-only query', async () => {
+    const result = await client.callTool({
+      name: 'search_knowledge',
+      arguments: { query: '   ' },
+    })
+
+    expect(result.isError).toBe(true)
+  })
+
+  // ========== START > END VALIDATION ==========
+
+  it('search_events returns error when start > end', async () => {
+    const result = await client.callTool({
+      name: 'search_events',
+      arguments: {
+        query: 'test',
+        start: '2025-12-31T00:00:00Z',
+        end: '2025-01-01T00:00:00Z',
+      },
+    })
+
+    const text = getText(result)
+    expect(result.isError).toBe(true)
+    expect(text).toContain('start must be before end')
+  })
+
+  it('get_timeline returns error when start > end', async () => {
+    const result = await client.callTool({
+      name: 'get_timeline',
+      arguments: {
+        agent_id: 'agent-1',
+        start: '2025-12-31T00:00:00Z',
+        end: '2025-01-01T00:00:00Z',
+      },
+    })
+
+    const text = getText(result)
+    expect(result.isError).toBe(true)
+    expect(text).toContain('start must be before end')
+  })
+
+  // ========== PARTIAL TIME RANGES ==========
+
+  it('search_events accepts start without end', async () => {
+    await client.callTool({
+      name: 'record_event',
+      arguments: { agent_id: 'agent-1', event_type: 'observation', content: 'Recent event' },
+    })
+
+    const result = await client.callTool({
+      name: 'search_events',
+      arguments: {
+        query: 'recent',
+        start: '2020-01-01T00:00:00Z',
+      },
+    })
+
+    expect(result.isError).toBeUndefined()
+    const text = getText(result)
+    expect(text).toContain('<search_results')
+  })
+
+  it('search_events accepts end without start', async () => {
+    await client.callTool({
+      name: 'record_event',
+      arguments: { agent_id: 'agent-1', event_type: 'observation', content: 'Past event' },
+    })
+
+    const result = await client.callTool({
+      name: 'search_events',
+      arguments: {
+        query: 'past',
+        end: '2099-01-01T00:00:00Z',
+      },
+    })
+
+    expect(result.isError).toBeUndefined()
+    const text = getText(result)
+    expect(text).toContain('<search_results')
+  })
 })

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { loadConfig } from './config.js'
 
 describe('loadConfig', () => {
@@ -15,7 +15,7 @@ describe('loadConfig', () => {
 
     const config = loadConfig()
     expect(config.decayRate).toBe(0.995)
-    expect(config.reflectionThreshold).toBe(150)
+    expect(config.reflectionThreshold).toBe(15)
     expect(config.weightRecency).toBe(0.4)
     expect(config.weightImportance).toBe(0.3)
     expect(config.weightRelevance).toBe(0.3)
@@ -87,5 +87,42 @@ describe('loadConfig', () => {
 
   it('collects multiple validation errors', () => {
     expect(() => loadConfig({ decayRate: 2, embeddingDimensions: 0, weightRecency: -1 })).toThrow('Invalid configuration')
+  })
+
+  it('throws on invalid logLevel', () => {
+    expect(() => loadConfig({ logLevel: 'verbose' })).toThrow('logLevel must be one of')
+    expect(() => loadConfig({ logLevel: 'WARN' })).toThrow('logLevel must be one of')
+  })
+
+  it('accepts valid logLevels', () => {
+    for (const level of ['debug', 'info', 'warn', 'error']) {
+      expect(() => loadConfig({ logLevel: level })).not.toThrow()
+    }
+  })
+
+  it('empty env string falls back to default', () => {
+    process.env.EMBEDDING_MODEL = ''
+    process.env.LOG_LEVEL = ''
+
+    const config = loadConfig()
+    expect(config.embeddingModel).toBe('Xenova/all-MiniLM-L6-v2')
+    expect(config.logLevel).toBe('info')
+  })
+
+  it('throws on empty dataDir', () => {
+    expect(() => loadConfig({ dataDir: '' })).toThrow('dataDir must be a non-empty path')
+  })
+
+  it('throws on dataDir with null bytes', () => {
+    expect(() => loadConfig({ dataDir: '/some/path\0bad' })).toThrow('null bytes')
+  })
+
+  it('warns when weights do not sum to 1.0', () => {
+    const warnSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    loadConfig({ weightRecency: 0.5, weightImportance: 0.5, weightRelevance: 0.5 })
+    expect(warnSpy).toHaveBeenCalled()
+    const callArgs = warnSpy.mock.calls.flat().join(' ')
+    expect(callArgs).toContain('weights sum to')
+    warnSpy.mockRestore()
   })
 })

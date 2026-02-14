@@ -68,4 +68,21 @@ describe('BackgroundScheduler', () => {
     scheduler.stop()
     expect(scheduler.isRunning).toBe(false)
   })
+
+  it('executes consolidation on interval', async () => {
+    const spy = vi.spyOn(scheduler as any, 'runConsolidation').mockResolvedValue(undefined)
+
+    scheduler.start()
+
+    // Advance past the consolidation interval (60000ms set in beforeEach)
+    await vi.advanceTimersByTimeAsync(60000)
+
+    expect(spy).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(60000)
+
+    expect(spy).toHaveBeenCalledTimes(2)
+
+    spy.mockRestore()
+  })
 })

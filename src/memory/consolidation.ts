@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { Config } from '../core/config.js'
+import { stateKeys } from '../core/constants.js'
 import type { EmbeddingProvider, Entity } from '../core/types.js'
 import { logger } from '../utils/logger.js'
 import type { LanceStorage } from '../storage/lance.js'
@@ -41,9 +42,7 @@ export class ConsolidationEngine {
     let summariesRefreshed = 0
 
     const entities = this.sqlite.getAllEntities()
-    const cutoffDate = new Date()
-    cutoffDate.setDate(cutoffDate.getDate() - pruneAge)
-    const cutoffStr = cutoffDate.toISOString()
+    // TODO: Age-based pruning not yet implemented — currently pruning is observation count-based (>20)
 
     for (const entity of entities) {
       let changed = false
@@ -65,18 +64,19 @@ export class ConsolidationEngine {
       }
 
       if (changed) {
+        const textForEmbedding = [
+          entity.name,
+          entity.summary ?? '',
+          ...entity.observations,
+        ].join(' ')
+        const vector = await this.embeddings.embed(textForEmbedding)
+
         this.sqlite.upsertEntity({
           ...entity,
           updated_at: new Date().toISOString(),
         })
 
         try {
-          const textForEmbedding = [
-            entity.name,
-            entity.summary ?? '',
-            ...entity.observations,
-          ].join(' ')
-          const vector = await this.embeddings.embed(textForEmbedding)
           await this.lance.delete(entity.id)
           await this.lance.add(entity.id, 'entity', vector, textForEmbedding, new Date().toISOString())
         } catch (err) {
@@ -87,7 +87,7 @@ export class ConsolidationEngine {
       }
     }
 
-    this.sqlite.setState('last_consolidation_at', new Date().toISOString())
+    this.sqlite.setState(stateKeys.lastConsolidationAt, new Date().toISOString())
 
     const result = {
       entities_updated: entitiesUpdated,
@@ -99,6 +99,7 @@ export class ConsolidationEngine {
     return result
   }
 
+  // updated_at refreshes when observations change, so staleness reflects content freshness
   private isStale(entity: Entity): boolean {
     if (!entity.updated_at) return true
     const updated = new Date(entity.updated_at)
@@ -110,9 +111,22 @@ export class ConsolidationEngine {
     if (!this.client) return null
 
     const relations = this.sqlite.getRelationsFor(entity.id)
-    const relContext = relations.slice(0, 10).map(r => {
-      const from = this.sqlite.getEntityById(r.from_entity)
-      const to = this.sqlite.getEntityById(r.to_entity)
+    const topRelations = relations.slice(0, 10)
+
+    const entityIds = new Set<string>()
+    for (const r of topRelations) {
+      entityIds.add(r.from_entity)
+      entityIds.add(r.to_entity)
+    }
+    const entityMap = new Map<string, Entity>()
+    for (const id of entityIds) {
+      const e = this.sqlite.getEntityById(id)
+      if (e) entityMap.set(id, e)
+    }
+
+    const relContext = topRelations.map(r => {
+      const from = entityMap.get(r.from_entity)
+      const to = entityMap.get(r.to_entity)
       return `${from?.name ?? r.from_entity} --[${r.relation_type}]--> ${to?.name ?? r.to_entity}`
     }).join('\n')
 
@@ -137,7 +151,7 @@ Be concise and factual.`,
         ],
       })
 
-      const text = response.content[0].type === 'text' ? response.content[0].text.trim() : ''
+      const text = response.content[0]?.type === 'text' ? response.content[0].text.trim() : ''
       return text || null
     } catch (err) {
       logger.warn(`Failed to refresh summary for ${entity.name}`, err)

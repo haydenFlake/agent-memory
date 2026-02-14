@@ -101,10 +101,18 @@ describe('ConsolidationEngine', () => {
   it('handles lance failure gracefully', async () => {
     const obs = Array.from({ length: 25 }, (_, i) => `Obs ${i}`)
     insertEntity(sqlite, 'TestEntity', obs)
-    embeddings.shouldFail = true
+
+    // Make lance fail instead of embeddings — embed-first means embed succeeds, lance fails
+    const failingLance = {
+      ...lance,
+      delete: async () => { throw new Error('Lance delete failed') },
+      add: async () => { throw new Error('Lance add failed') },
+    }
+    const config = loadConfig({ anthropicApiKey: null })
+    const failEngine = new ConsolidationEngine(sqlite, failingLance as any, embeddings, config)
 
     // Should not throw despite lance error
-    const result = await engine.consolidate()
+    const result = await failEngine.consolidate()
     expect(result.entities_updated).toBe(1)
     expect(result.observations_pruned).toBe(5)
 

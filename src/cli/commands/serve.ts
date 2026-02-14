@@ -23,16 +23,21 @@ export async function runServe(config: Config): Promise<void> {
   const scheduler = new BackgroundScheduler(sqlite, lance, embeddings, config)
   scheduler.start()
 
-  process.on('SIGINT', () => {
-    scheduler.stop()
-    sqlite.close()
-    process.exit(0)
-  })
-  process.on('SIGTERM', () => {
-    scheduler.stop()
-    sqlite.close()
-    process.exit(0)
-  })
+  const { server } = await startMcpServer(sqlite, lance, embeddings, config)
 
-  await startMcpServer(sqlite, lance, embeddings, config)
+  const shutdown = async (): Promise<void> => {
+    scheduler.stop()
+    const timeout = setTimeout(() => process.exit(1), 5000)
+    try {
+      await server.close()
+      sqlite.close()
+      lance.close()
+    } finally {
+      clearTimeout(timeout)
+      process.exit(0)
+    }
+  }
+
+  process.on('SIGINT', shutdown)
+  process.on('SIGTERM', shutdown)
 }

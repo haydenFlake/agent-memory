@@ -32,7 +32,7 @@ Memory: "${content}"`,
         ],
       })
 
-      const text = response.content[0].type === 'text' ? response.content[0].text.trim() : ''
+      const text = response.content[0]?.type === 'text' ? response.content[0].text.trim() : ''
       const rating = parseInt(text, 10)
       if (isNaN(rating) || rating < 1 || rating > 10) return 0.5
       return rating / 10
@@ -43,6 +43,13 @@ Memory: "${content}"`,
   }
 
   async scoreBatch(contents: string[]): Promise<number[]> {
-    return Promise.all(contents.map(c => this.score(c)))
+    const results: number[] = []
+    const concurrency = 5
+    for (let i = 0; i < contents.length; i += concurrency) {
+      const chunk = contents.slice(i, i + concurrency)
+      const scores = await Promise.all(chunk.map(c => this.score(c)))
+      results.push(...scores)
+    }
+    return results
   }
 }

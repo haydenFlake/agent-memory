@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { Config } from '../core/config.js'
+import { stateKeys } from '../core/constants.js'
 import type { EmbeddingProvider, MemoryEvent, Reflection } from '../core/types.js'
 import { generateId } from '../core/ulid.js'
 import { logger } from '../utils/logger.js'
@@ -12,6 +13,7 @@ export class ReflectionEngine {
   private embeddings: EmbeddingProvider
   private client: Anthropic | null = null
   private threshold: number
+  private reflecting = false
 
   constructor(
     sqlite: SqliteStorage,
@@ -36,7 +38,7 @@ export class ReflectionEngine {
   async shouldReflect(agentId: string): Promise<boolean> {
     if (!this.client) return false
     const unreflected = this.sqlite.getUnreflectedEvents(agentId)
-    const cumulativeImportance = unreflected.reduce((sum, e) => sum + e.importance * 10, 0)
+    const cumulativeImportance = unreflected.reduce((sum, e) => sum + e.importance, 0)
     return cumulativeImportance >= this.threshold
   }
 
@@ -46,10 +48,24 @@ export class ReflectionEngine {
       return []
     }
 
+    if (this.reflecting) {
+      logger.warn('Reflection already in progress, skipping')
+      return []
+    }
+    this.reflecting = true
+
+    try {
+      return await this._doReflect(agentId, force)
+    } finally {
+      this.reflecting = false
+    }
+  }
+
+  private async _doReflect(agentId: string, force: boolean): Promise<Reflection[]> {
     const unreflected = this.sqlite.getUnreflectedEvents(agentId)
     if (unreflected.length === 0) return []
 
-    const cumulativeImportance = unreflected.reduce((sum, e) => sum + e.importance * 10, 0)
+    const cumulativeImportance = unreflected.reduce((sum, e) => sum + e.importance, 0)
     if (!force && cumulativeImportance < this.threshold) {
       logger.debug(`Reflection threshold not met: ${cumulativeImportance.toFixed(1)} / ${this.threshold}`)
       return []
@@ -64,27 +80,34 @@ export class ReflectionEngine {
       const insight = await this.synthesizeInsight(question, unreflected)
       if (!insight) continue
 
-      const now = new Date().toISOString()
-      const reflection: Reflection = {
-        id: generateId(),
-        content: insight,
-        source_ids: unreflected.map(e => e.id),
-        importance: 0.7,
-        depth: 1,
-        created_at: now,
-        accessed_at: null,
-        access_count: 0,
+      try {
+        const now = new Date().toISOString()
+        const reflection: Reflection = {
+          id: generateId(),
+          content: insight,
+          source_ids: unreflected.map(e => e.id),
+          importance: 0.7,
+          depth: 1,
+          created_at: now,
+          accessed_at: null,
+          access_count: 0,
+        }
+
+        const vector = await this.embeddings.embed(insight)
+
+        this.sqlite.insertReflection(reflection)
+        await this.lance.add(reflection.id, 'reflection', vector, insight, now)
+
+        reflections.push(reflection)
+      } catch (err) {
+        logger.warn(`Failed to store reflection for question: ${question}`, err)
       }
-
-      this.sqlite.insertReflection(reflection)
-
-      const vector = await this.embeddings.embed(insight)
-      await this.lance.add(reflection.id, 'reflection', vector, insight, now)
-
-      reflections.push(reflection)
     }
 
-    this.sqlite.setState('last_reflection_at', new Date().toISOString())
+    if (unreflected.length > 0) {
+      this.sqlite.setState(stateKeys.lastReflectedAt(agentId), unreflected[0].created_at)
+    }
+    this.sqlite.setState(stateKeys.lastReflectionAt, new Date().toISOString())
     logger.info(`Generated ${reflections.length} reflections`)
 
     return reflections
@@ -115,7 +138,7 @@ Respond with exactly 3 questions, one per line, no numbering or bullets.`,
         ],
       })
 
-      const text = response.content[0].type === 'text' ? response.content[0].text : ''
+      const text = response.content[0]?.type === 'text' ? response.content[0].text : ''
       return text
         .split('\n')
         .map(l => l.trim())
@@ -152,7 +175,7 @@ Provide a single paragraph insight that synthesizes the evidence into a higher-l
         ],
       })
 
-      const text = response.content[0].type === 'text' ? response.content[0].text.trim() : ''
+      const text = response.content[0]?.type === 'text' ? response.content[0].text.trim() : ''
       return text || null
     } catch (err) {
       logger.error('Failed to synthesize insight', err)

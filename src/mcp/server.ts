@@ -10,8 +10,28 @@ import { ReflectionEngine } from '../memory/reflection.js'
 import { ConsolidationEngine } from '../memory/consolidation.js'
 import type { SqliteStorage } from '../storage/sqlite.js'
 import type { LanceStorage } from '../storage/lance.js'
+import { generateId } from '../core/ulid.js'
 import { logger } from '../utils/logger.js'
 import { escapeXml } from '../utils/xml.js'
+
+type ToolResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean }
+
+function withErrorHandling<T extends Record<string, unknown>>(
+  handler: (args: T) => Promise<ToolResult>,
+): (args: T) => Promise<ToolResult> {
+  return async (args: T) => {
+    try {
+      return await handler(args)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      logger.error('MCP tool error', { error: err })
+      return {
+        content: [{ type: 'text' as const, text: `<error>${escapeXml(message)}</error>` }],
+        isError: true,
+      }
+    }
+  }
+}
 
 export async function createMcpServer(
   sqlite: SqliteStorage,
@@ -39,11 +59,14 @@ export async function createMcpServer(
       agent_id: z.string().min(1).max(255).describe('Your agent identifier (use a consistent ID across sessions)'),
       event_type: z.enum(['message', 'email', 'action', 'decision', 'observation', 'communication', 'file_change', 'error', 'milestone']).describe('Type of event'),
       content: z.string().min(1).max(50000).describe('Full natural language description of the event'),
-      entities: z.array(z.string().min(1).max(500)).optional().describe('Names of people, projects, or things involved'),
-      metadata: z.record(z.unknown()).optional().describe('Additional structured data'),
+      entities: z.array(z.string().min(1).max(500)).max(100).optional().describe('Names of people, projects, or things involved'),
+      metadata: z.record(z.unknown()).optional().refine(
+        m => !m || JSON.stringify(m).length <= 10_000,
+        'Metadata must be under 10KB when serialized',
+      ).describe('Additional structured data'),
       importance: z.number().min(0).max(1).optional().describe('Override importance score (0-1). If omitted, auto-scored by LLM.'),
     },
-    async (args) => {
+    withErrorHandling(async (args) => {
       const event = await episodic.recordEvent({
         agent_id: args.agent_id,
         event_type: args.event_type as EventType,
@@ -65,27 +88,37 @@ export async function createMcpServer(
           },
         ],
       }
-    },
+    }),
   )
 
   server.tool(
     'search_events',
     'Search the episodic event timeline using semantic similarity and keyword matching. Returns events ranked by relevance.',
     {
-      query: z.string().min(1).max(1000).describe('Natural language search query'),
+      query: z.string().trim().min(1).max(1000).describe('Natural language search query'),
       agent_id: z.string().min(1).max(255).optional().describe('Filter to a specific agent'),
       event_type: z.enum(['message', 'email', 'action', 'decision', 'observation', 'communication', 'file_change', 'error', 'milestone']).optional().describe('Filter by event type'),
-      start: z.string().optional().describe('Start of time range (ISO-8601)'),
-      end: z.string().optional().describe('End of time range (ISO-8601)'),
-      entities: z.array(z.string().min(1).max(500)).optional().describe('Filter to events involving these entities'),
+      start: z.string().refine(s => !isNaN(Date.parse(s)), 'Invalid ISO-8601 date').optional().describe('Start of time range (ISO-8601)'),
+      end: z.string().refine(s => !isNaN(Date.parse(s)), 'Invalid ISO-8601 date').optional().describe('End of time range (ISO-8601)'),
+      entities: z.array(z.string().min(1).max(500)).max(100).optional().describe('Filter to events involving these entities'),
       limit: z.number().min(1).max(100).optional().describe('Max results (default 20)'),
     },
-    async (args) => {
+    withErrorHandling(async (args) => {
+      if (args.start && args.end && new Date(args.start) > new Date(args.end)) {
+        return {
+          content: [{ type: 'text' as const, text: '<error>start must be before end</error>' }],
+          isError: true,
+        }
+      }
+
       const events = await episodic.searchEvents({
         query: args.query,
         agent_id: args.agent_id,
         event_type: args.event_type as EventType | undefined,
-        time_range: args.start && args.end ? { start: args.start, end: args.end } : undefined,
+        time_range: (args.start || args.end) ? {
+          start: args.start ?? '1970-01-01T00:00:00Z',
+          end: args.end ?? new Date().toISOString(),
+        } : undefined,
         entities: args.entities,
         limit: args.limit,
       })
@@ -97,7 +130,7 @@ export async function createMcpServer(
       return {
         content: [{ type: 'text' as const, text: `<search_results count="${events.length}">\n${formatted}\n</search_results>` }],
       }
-    },
+    }),
   )
 
   server.tool(
@@ -105,12 +138,19 @@ export async function createMcpServer(
     'Retrieve events in chronological order within a time range. Use for reviewing what happened during a specific period.',
     {
       agent_id: z.string().min(1).max(255).describe('Agent identifier'),
-      start: z.string().describe('Start of time range (ISO-8601)'),
-      end: z.string().describe('End of time range (ISO-8601)'),
+      start: z.string().refine(s => !isNaN(Date.parse(s)), 'Invalid ISO-8601 date').describe('Start of time range (ISO-8601)'),
+      end: z.string().refine(s => !isNaN(Date.parse(s)), 'Invalid ISO-8601 date').describe('End of time range (ISO-8601)'),
       event_type: z.enum(['message', 'email', 'action', 'decision', 'observation', 'communication', 'file_change', 'error', 'milestone']).optional(),
       limit: z.number().min(1).max(200).optional().describe('Max results (default 50)'),
     },
-    async (args) => {
+    withErrorHandling(async (args) => {
+      if (new Date(args.start) > new Date(args.end)) {
+        return {
+          content: [{ type: 'text' as const, text: '<error>start must be before end</error>' }],
+          isError: true,
+        }
+      }
+
       const events = episodic.getTimeline({
         agent_id: args.agent_id,
         start: args.start,
@@ -126,7 +166,7 @@ export async function createMcpServer(
       return {
         content: [{ type: 'text' as const, text: `<timeline count="${events.length}" from="${escapeXml(args.start)}" to="${escapeXml(args.end)}">\n${formatted}\n</timeline>` }],
       }
-    },
+    }),
   )
 
   server.tool(
@@ -135,7 +175,7 @@ export async function createMcpServer(
     {
       event_id: z.string().min(1).max(255).describe('The event ID to retrieve'),
     },
-    async (args) => {
+    withErrorHandling(async (args) => {
       const event = episodic.getEvent(args.event_id)
       if (!event) {
         return { content: [{ type: 'text' as const, text: '<error>Event not found</error>' }], isError: true }
@@ -147,7 +187,7 @@ export async function createMcpServer(
           text: `<event id="${escapeXml(event.id)}" type="${escapeXml(event.event_type)}" importance="${event.importance.toFixed(2)}" at="${escapeXml(event.created_at)}" entities="${escapeXml(event.entities.join(', '))}">\n${escapeXml(event.content)}\n<metadata>${escapeXml(JSON.stringify(event.metadata))}</metadata>\n</event>`,
         }],
       }
-    },
+    }),
   )
 
   // ========== SEMANTIC MEMORY TOOLS ==========
@@ -159,9 +199,9 @@ export async function createMcpServer(
       block_type: z.enum(['persona', 'user_profile']).describe('Which memory block to update'),
       block_key: z.string().min(1).max(255).describe('Block identifier (e.g., "default" for persona, or a username for user profiles)'),
       operation: z.enum(['append', 'replace', 'remove']).describe('How to modify the block'),
-      content: z.string().max(50000).describe('Content to append/replace with (ignored for remove)'),
+      content: z.string().max(5000).describe('Content to append/replace with (ignored for remove)'),
     },
-    async (args) => {
+    withErrorHandling(async (args) => {
       const block = semantic.updateCoreMemory({
         block_type: args.block_type,
         block_key: args.block_key,
@@ -180,7 +220,7 @@ export async function createMcpServer(
           }),
         }],
       }
-    },
+    }),
   )
 
   server.tool(
@@ -188,15 +228,16 @@ export async function createMcpServer(
     'Record a new learning, insight, or preference as an entity in the knowledge graph. Use this when you discover something worth remembering long-term.',
     {
       content: z.string().min(1).max(50000).describe('The learning or insight to store'),
-      entities: z.array(z.string().min(1).max(500)).optional().describe('Related entity names'),
+      entities: z.array(z.string().min(1).max(500)).max(100).optional().describe('Related entity names'),
       importance: z.number().min(0).max(1).optional().describe('Importance score (0-1, default 0.5)'),
     },
-    async (args) => {
+    withErrorHandling(async (args) => {
       const entity = await semantic.updateEntity({
-        name: `learning_${Date.now()}`,
+        name: `learning_${generateId()}`,
         entity_type: 'concept',
         observations: [args.content],
         summary: args.content,
+        importance: args.importance,
       })
 
       if (args.entities) {
@@ -221,7 +262,7 @@ export async function createMcpServer(
           }),
         }],
       }
-    },
+    }),
   )
 
   server.tool(
@@ -230,10 +271,10 @@ export async function createMcpServer(
     {
       name: z.string().min(1).max(500).describe('Entity name (unique identifier)'),
       entity_type: z.enum(['person', 'project', 'concept', 'preference', 'tool', 'organization', 'location', 'topic']).describe('Type of entity'),
-      observations: z.array(z.string().min(1).max(5000)).optional().describe('New facts to add (merged with existing)'),
+      observations: z.array(z.string().min(1).max(5000)).max(100).optional().describe('New facts to add (merged with existing)'),
       summary: z.string().max(10000).optional().describe('Updated summary (replaces existing)'),
     },
-    async (args) => {
+    withErrorHandling(async (args) => {
       const entity = await semantic.updateEntity({
         name: args.name,
         entity_type: args.entity_type as EntityType,
@@ -252,7 +293,7 @@ export async function createMcpServer(
           }),
         }],
       }
-    },
+    }),
   )
 
   server.tool(
@@ -262,46 +303,42 @@ export async function createMcpServer(
       from_entity: z.string().min(1).max(500).describe('Source entity name'),
       to_entity: z.string().min(1).max(500).describe('Target entity name'),
       relation_type: z.string().min(1).max(255).describe('Relationship type in active voice (e.g., "works_on", "prefers", "manages")'),
-      metadata: z.record(z.unknown()).optional().describe('Additional relationship metadata'),
+      metadata: z.record(z.unknown()).optional().refine(
+        m => !m || JSON.stringify(m).length <= 10_000,
+        'Metadata must be under 10KB when serialized',
+      ).describe('Additional relationship metadata'),
     },
-    async (args) => {
-      try {
-        const relation = semantic.createRelation({
-          from_entity: args.from_entity,
-          to_entity: args.to_entity,
-          relation_type: args.relation_type,
-          metadata: args.metadata,
-        })
+    withErrorHandling(async (args) => {
+      const relation = semantic.createRelation({
+        from_entity: args.from_entity,
+        to_entity: args.to_entity,
+        relation_type: args.relation_type,
+        metadata: args.metadata,
+      })
 
-        return {
-          content: [{
-            type: 'text' as const,
-            text: formatXml('relation_created', {
-              id: relation.id,
-              from: args.from_entity,
-              to: args.to_entity,
-              type: relation.relation_type,
-            }),
-          }],
-        }
-      } catch (err) {
-        return {
-          content: [{ type: 'text' as const, text: `<error>${escapeXml(err instanceof Error ? err.message : String(err))}</error>` }],
-          isError: true,
-        }
+      return {
+        content: [{
+          type: 'text' as const,
+          text: formatXml('relation_created', {
+            id: relation.id,
+            from: args.from_entity,
+            to: args.to_entity,
+            type: relation.relation_type,
+          }),
+        }],
       }
-    },
+    }),
   )
 
   server.tool(
     'search_knowledge',
     'Semantic search over the knowledge graph (entities, their observations, and summaries). Use to find what you know about a topic.',
     {
-      query: z.string().min(1).max(1000).describe('Natural language search query'),
+      query: z.string().trim().min(1).max(1000).describe('Natural language search query'),
       entity_type: z.enum(['person', 'project', 'concept', 'preference', 'tool', 'organization', 'location', 'topic']).optional().describe('Filter by entity type'),
       limit: z.number().min(1).max(50).optional().describe('Max results (default 10)'),
     },
-    async (args) => {
+    withErrorHandling(async (args) => {
       const entities = await semantic.searchKnowledge({
         query: args.query,
         entity_type: args.entity_type as EntityType | undefined,
@@ -323,7 +360,7 @@ export async function createMcpServer(
       return {
         content: [{ type: 'text' as const, text: `<knowledge_results count="${entities.length}">\n${formatted}\n</knowledge_results>` }],
       }
-    },
+    }),
   )
 
   // ========== MEMORY MANAGEMENT TOOLS ==========
@@ -332,17 +369,19 @@ export async function createMcpServer(
     'recall',
     'The primary memory retrieval tool. Returns the most relevant memories across ALL stores (events, entities, reflections), scored by recency x importance x relevance. Also includes core memory blocks (persona + user profiles) as a header. Use this as your main way to remember context.',
     {
-      query: z.string().min(1).max(1000).describe('What are you trying to remember? Describe the context or question.'),
+      query: z.string().trim().min(1).max(1000).describe('What are you trying to remember? Describe the context or question.'),
       limit: z.number().min(1).max(50).optional().describe('Max memories to return (default 20)'),
       include_core: z.boolean().optional().describe('Include core memory blocks in response (default true)'),
       agent_id: z.string().min(1).max(255).optional().describe('Filter to a specific agent'),
+      touch: z.boolean().default(true).optional().describe('Update access timestamps on recalled memories (default true)'),
     },
-    async (args) => {
+    withErrorHandling(async (args) => {
       const result = await retrieval.recall({
         query: args.query,
         limit: args.limit,
         include_core: args.include_core,
         agent_id: args.agent_id,
+        touch: args.touch,
       })
 
       let output = ''
@@ -361,7 +400,7 @@ export async function createMcpServer(
       output += `<recall_results count="${result.memories.length}" searched="${result.total_searched}">\n${memories}\n</recall_results>`
 
       return { content: [{ type: 'text' as const, text: output }] }
-    },
+    }),
   )
 
   server.tool(
@@ -371,7 +410,7 @@ export async function createMcpServer(
       agent_id: z.string().min(1).max(255).describe('Agent identifier'),
       force: z.boolean().optional().describe('Force reflection even if importance threshold not met'),
     },
-    async (args) => {
+    withErrorHandling(async (args) => {
       if (!reflection.enabled) {
         return {
           content: [{ type: 'text' as const, text: '<error>Reflection requires ANTHROPIC_API_KEY to be configured</error>' }],
@@ -394,7 +433,7 @@ export async function createMcpServer(
       return {
         content: [{ type: 'text' as const, text: `<reflection_result count="${reflections.length}">\n${formatted}\n</reflection_result>` }],
       }
-    },
+    }),
   )
 
   server.tool(
@@ -403,7 +442,7 @@ export async function createMcpServer(
     {
       max_age_days: z.number().min(1).optional().describe('Override prune age (default from config)'),
     },
-    async (args) => {
+    withErrorHandling(async (args) => {
       const result = await consolidation.consolidate(args.max_age_days)
 
       return {
@@ -416,14 +455,14 @@ export async function createMcpServer(
           }),
         }],
       }
-    },
+    }),
   )
 
   server.tool(
     'memory_status',
     'Get memory system statistics including event count, entity count, last reflection time, and storage health.',
     {},
-    async () => {
+    withErrorHandling(async () => {
       const stats = sqlite.getStats()
       const vectorCount = await lance.count()
 
@@ -441,7 +480,7 @@ export async function createMcpServer(
 </memory_status>`
 
       return { content: [{ type: 'text' as const, text: output }] }
-    },
+    }),
   )
 
   return server
@@ -452,11 +491,12 @@ export async function startMcpServer(
   lance: LanceStorage,
   embeddings: EmbeddingProvider,
   config: Config,
-): Promise<void> {
+): Promise<{ server: McpServer; transport: StdioServerTransport }> {
   const server = await createMcpServer(sqlite, lance, embeddings, config)
   const transport = new StdioServerTransport()
   await server.connect(transport)
   logger.info('Agent Memory MCP server started (stdio transport)')
+  return { server, transport }
 }
 
 function formatXml(tag: string, attrs: Record<string, string>): string {

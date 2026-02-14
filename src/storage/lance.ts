@@ -25,6 +25,7 @@ export interface VectorSearchResult {
 export class LanceStorage {
   private db!: lancedb.Connection
   private table: lancedb.Table | null = null
+  private tablePromise: Promise<lancedb.Table> | null = null
   private dimensions: number
   private ready: Promise<void>
 
@@ -45,17 +46,26 @@ export class LanceStorage {
 
   private async ensureTable(): Promise<lancedb.Table> {
     await this.ready
-    if (!this.table) {
-      const emptyRecord: VectorRecord = {
-        vector: new Array(this.dimensions).fill(0),
-        memory_id: '__init__',
-        memory_type: 'event',
-        content: '',
-        created_at: new Date().toISOString(),
-      }
-      this.table = await this.db.createTable('memories', [emptyRecord])
-      await this.table.delete('memory_id = "__init__"')
+    if (this.table) return this.table
+    if (!this.tablePromise) {
+      this.tablePromise = this._createTable().catch(err => {
+        this.tablePromise = null
+        throw err
+      })
     }
+    return this.tablePromise
+  }
+
+  private async _createTable(): Promise<lancedb.Table> {
+    const emptyRecord: VectorRecord = {
+      vector: new Array(this.dimensions).fill(0),
+      memory_id: '__init__',
+      memory_type: 'event',
+      content: '',
+      created_at: new Date().toISOString(),
+    }
+    this.table = await this.db.createTable('memories', [emptyRecord])
+    await this.table.delete('memory_id = "__init__"')
     return this.table
   }
 
@@ -68,6 +78,9 @@ export class LanceStorage {
   ): Promise<void> {
     if (!isValidUlid(memoryId)) {
       throw new StorageError(`Invalid memory ID format: ${memoryId}`)
+    }
+    if (vector.length !== this.dimensions) {
+      throw new StorageError(`Vector dimension mismatch: expected ${this.dimensions}, got ${vector.length}`)
     }
     const table = await this.ensureTable()
     const record: VectorRecord = {
@@ -91,6 +104,9 @@ export class LanceStorage {
     for (const r of records) {
       if (!isValidUlid(r.memoryId)) {
         throw new StorageError(`Invalid memory ID format: ${r.memoryId}`)
+      }
+      if (r.vector.length !== this.dimensions) {
+        throw new StorageError(`Vector dimension mismatch: expected ${this.dimensions}, got ${r.vector.length}`)
       }
     }
     const table = await this.ensureTable()
@@ -117,6 +133,7 @@ export class LanceStorage {
       if (!allowed.includes(memoryType)) {
         throw new Error(`Invalid memory_type: ${memoryType}`)
       }
+      // SAFETY: memoryType is whitelist-validated above. LanceDB does not support parameterized queries.
       query = query.where(`memory_type = '${memoryType}'`)
     }
 
@@ -136,6 +153,7 @@ export class LanceStorage {
       throw new StorageError(`Invalid memory ID format: ${memoryId}`)
     }
     const table = await this.ensureTable()
+    // SAFETY: memoryId is ULID-validated above. LanceDB does not support parameterized queries.
     await table.delete(`memory_id = "${memoryId}"`)
   }
 
@@ -143,5 +161,15 @@ export class LanceStorage {
     await this.ready
     if (!this.table) return 0
     return await this.table.countRows()
+  }
+
+  /**
+   * Releases local references to table and promise.
+   * LanceDB does not expose an explicit connection close API —
+   * the underlying connection is released when garbage collected.
+   */
+  close(): void {
+    this.table = null
+    this.tablePromise = null
   }
 }

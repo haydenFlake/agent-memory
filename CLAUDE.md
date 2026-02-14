@@ -28,9 +28,9 @@ bin/            — Entry point
 
 ## Key Patterns
 - ULIDs for all IDs (time-sortable)
-- Retrieval scoring: `score = recency * importance * relevance`
+- Retrieval scoring: `score = 0.4*recency + 0.3*importance + 0.3*relevance` (weighted sum)
 - Recency decay: `0.995^hours_since_access`
-- Reflections trigger when cumulative importance > 150
+- Reflections trigger when cumulative importance > 15 (configurable)
 - Relations are bi-temporal (valid_from, valid_until)
 - Events are immutable; entities/knowledge evolve
 

@@ -35,7 +35,7 @@ export function createCli(): Command {
           dataDir: opts.dataDir,
           logLevel: opts.logLevel,
         })
-        setLogLevel(config.logLevel as 'debug' | 'info' | 'warn' | 'error')
+        setLogLevel(config.logLevel)
 
         const { runServe } = await import('./commands/serve.js')
         await runServe(config)
@@ -81,7 +81,11 @@ export function createCli(): Command {
     .command('consolidate')
     .description('Run memory consolidation (prune old observations, refresh summaries)')
     .option('-d, --data-dir <path>', 'Data directory path')
-    .option('--max-age <days>', 'Max age in days for pruning', parseInt)
+    .option('--max-age <days>', 'Max age in days for pruning', (val: string) => {
+      const n = parseInt(val, 10)
+      if (isNaN(n) || n <= 0) throw new Error('--max-age must be a positive integer')
+      return n
+    })
     .action(async (opts) => {
       try {
         const config = loadConfig({ dataDir: opts.dataDir })

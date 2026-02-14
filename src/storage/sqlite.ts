@@ -2,6 +2,8 @@ import Database from 'better-sqlite3'
 import { mkdirSync } from 'fs'
 import { dirname, join } from 'path'
 import type { Config } from '../core/config.js'
+import { stateKeys } from '../core/constants.js'
+import { StorageError } from '../core/errors.js'
 import type {
   CoreMemoryBlock,
   Entity,
@@ -12,6 +14,7 @@ import type {
 } from '../core/types.js'
 import { logger } from '../utils/logger.js'
 
+// TODO: Add transaction support. Currently relies on WAL mode + embed-first pattern to minimize inconsistency windows.
 export class SqliteStorage {
   private db: Database.Database
 
@@ -165,14 +168,19 @@ export class SqliteStorage {
   }
 
   searchEventsFts(query: string, limit: number = 20): MemoryEvent[] {
-    const rows = this.db.prepare(`
-      SELECT e.* FROM events e
-      JOIN events_fts fts ON e.rowid = fts.rowid
-      WHERE events_fts MATCH ?
-      ORDER BY rank
-      LIMIT ?
-    `).all(query, limit) as Record<string, unknown>[]
-    return rows.map(r => this.rowToEvent(r))
+    try {
+      const rows = this.db.prepare(`
+        SELECT e.* FROM events e
+        JOIN events_fts fts ON e.rowid = fts.rowid
+        WHERE events_fts MATCH ?
+        ORDER BY rank
+        LIMIT ?
+      `).all(query, limit) as Record<string, unknown>[]
+      return rows.map(r => this.rowToEvent(r))
+    } catch (err) {
+      logger.warn('FTS5 query failed, returning empty results', { query, error: err })
+      return []
+    }
   }
 
   getEventsByTimeRange(
@@ -204,16 +212,31 @@ export class SqliteStorage {
     return rows.map(r => this.rowToEvent(r))
   }
 
-  getUnreflectedEvents(agentId: string): MemoryEvent[] {
-    const rows = this.db.prepare(`
-      SELECT e.* FROM events e
-      WHERE e.agent_id = ?
-        AND e.id NOT IN (
-          SELECT json_each.value FROM reflections, json_each(reflections.source_ids)
-        )
-      ORDER BY e.created_at DESC
-    `).all(agentId) as Record<string, unknown>[]
-    return rows.map(r => this.rowToEvent(r))
+  getUnreflectedEvents(agentId: string, limit: number = 500): MemoryEvent[] {
+    const lastReflectedAt = this.getState(stateKeys.lastReflectedAt(agentId))
+    let sql = 'SELECT * FROM events WHERE agent_id = ?'
+    const params: unknown[] = [agentId]
+    if (lastReflectedAt) {
+      sql += ' AND created_at > ?'
+      params.push(lastReflectedAt)
+    }
+    sql += ' ORDER BY created_at DESC LIMIT ?'
+    params.push(limit)
+    return this.db.prepare(sql).all(...params).map(r => this.rowToEvent(r as Record<string, unknown>))
+  }
+
+  getEventsByIds(ids: string[]): Map<string, MemoryEvent> {
+    if (ids.length === 0) return new Map()
+    const placeholders = ids.map(() => '?').join(',')
+    const rows = this.db.prepare(
+      `SELECT * FROM events WHERE id IN (${placeholders})`,
+    ).all(...ids) as Record<string, unknown>[]
+    const map = new Map<string, MemoryEvent>()
+    for (const row of rows) {
+      const event = this.rowToEvent(row)
+      map.set(event.id, event)
+    }
+    return map
   }
 
   touchEvent(id: string): void {
@@ -282,7 +305,9 @@ export class SqliteStorage {
         summary = COALESCE(excluded.summary, entities.summary),
         observations = excluded.observations,
         importance = excluded.importance,
-        updated_at = excluded.updated_at
+        updated_at = excluded.updated_at,
+        accessed_at = entities.accessed_at,
+        access_count = entities.access_count
     `).run(
       entity.id,
       entity.name,
@@ -298,7 +323,7 @@ export class SqliteStorage {
   }
 
   getEntity(name: string): Entity | null {
-    const row = this.db.prepare('SELECT * FROM entities WHERE name = ?').get(name) as Record<string, unknown> | undefined
+    const row = this.db.prepare('SELECT * FROM entities WHERE name = ? COLLATE NOCASE LIMIT 1').get(name) as Record<string, unknown> | undefined
     return row ? this.rowToEntity(row) : null
   }
 
@@ -319,6 +344,20 @@ export class SqliteStorage {
     return rows.map(r => this.rowToEntity(r))
   }
 
+  getEntitiesByIds(ids: string[]): Map<string, Entity> {
+    if (ids.length === 0) return new Map()
+    const placeholders = ids.map(() => '?').join(',')
+    const rows = this.db.prepare(
+      `SELECT * FROM entities WHERE id IN (${placeholders})`,
+    ).all(...ids) as Record<string, unknown>[]
+    const map = new Map<string, Entity>()
+    for (const row of rows) {
+      const entity = this.rowToEntity(row)
+      map.set(entity.id, entity)
+    }
+    return map
+  }
+
   touchEntity(id: string): void {
     this.db.prepare(`
       UPDATE entities SET accessed_at = datetime('now'), access_count = access_count + 1 WHERE id = ?
@@ -332,20 +371,27 @@ export class SqliteStorage {
   // --- Relations ---
 
   insertRelation(relation: Relation): void {
-    this.db.prepare(`
-      INSERT INTO relations (id, from_entity, to_entity, relation_type, weight, valid_from, valid_until, metadata, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      relation.id,
-      relation.from_entity,
-      relation.to_entity,
-      relation.relation_type,
-      relation.weight,
-      relation.valid_from,
-      relation.valid_until,
-      JSON.stringify(relation.metadata),
-      relation.created_at,
-    )
+    try {
+      this.db.prepare(`
+        INSERT INTO relations (id, from_entity, to_entity, relation_type, weight, valid_from, valid_until, metadata, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        relation.id,
+        relation.from_entity,
+        relation.to_entity,
+        relation.relation_type,
+        relation.weight,
+        relation.valid_from,
+        relation.valid_until,
+        JSON.stringify(relation.metadata),
+        relation.created_at,
+      )
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('FOREIGN KEY')) {
+        throw new StorageError('Cannot create relation: entity not found', err)
+      }
+      throw err
+    }
   }
 
   invalidateRelation(fromEntity: string, toEntity: string, relationType: string, validUntil: string): void {
@@ -400,6 +446,20 @@ export class SqliteStorage {
     return row ? this.rowToReflection(row) : null
   }
 
+  getReflectionsByIds(ids: string[]): Map<string, Reflection> {
+    if (ids.length === 0) return new Map()
+    const placeholders = ids.map(() => '?').join(',')
+    const rows = this.db.prepare(
+      `SELECT * FROM reflections WHERE id IN (${placeholders})`,
+    ).all(...ids) as Record<string, unknown>[]
+    const map = new Map<string, Reflection>()
+    for (const row of rows) {
+      const reflection = this.rowToReflection(row)
+      map.set(reflection.id, reflection)
+    }
+    return map
+  }
+
   touchReflection(id: string): void {
     this.db.prepare(`
       UPDATE reflections SET accessed_at = datetime('now'), access_count = access_count + 1 WHERE id = ?
@@ -424,26 +484,40 @@ export class SqliteStorage {
   // --- Stats ---
 
   getStats(): MemoryStats {
-    const eventCount = this.getEventCount()
-    const entityCount = this.getEntityCount()
-    const relationCount = this.getRelationCount()
-    const reflectionCount = this.getReflectionCount()
-    const coreBlocks = (this.db.prepare('SELECT COUNT(*) as c FROM core_memory').get() as { c: number }).c
-
-    const oldestEvent = this.db.prepare('SELECT created_at FROM events ORDER BY created_at ASC LIMIT 1').get() as { created_at: string } | undefined
-    const newestEvent = this.db.prepare('SELECT created_at FROM events ORDER BY created_at DESC LIMIT 1').get() as { created_at: string } | undefined
+    const row = this.db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM events) as event_count,
+        (SELECT COUNT(*) FROM entities) as entity_count,
+        (SELECT COUNT(*) FROM relations) as relation_count,
+        (SELECT COUNT(*) FROM reflections) as reflection_count,
+        (SELECT COUNT(*) FROM core_memory) as core_blocks,
+        (SELECT created_at FROM events ORDER BY created_at ASC LIMIT 1) as oldest_event,
+        (SELECT created_at FROM events ORDER BY created_at DESC LIMIT 1) as newest_event
+    `).get() as {
+      event_count: number
+      entity_count: number
+      relation_count: number
+      reflection_count: number
+      core_blocks: number
+      oldest_event: string | null
+      newest_event: string | null
+    }
 
     return {
-      event_count: eventCount,
-      entity_count: entityCount,
-      relation_count: relationCount,
-      reflection_count: reflectionCount,
-      core_memory_blocks: coreBlocks,
-      last_reflection_at: this.getState('last_reflection_at'),
-      last_consolidation_at: this.getState('last_consolidation_at'),
-      oldest_event: oldestEvent?.created_at ?? null,
-      newest_event: newestEvent?.created_at ?? null,
+      event_count: row.event_count,
+      entity_count: row.entity_count,
+      relation_count: row.relation_count,
+      reflection_count: row.reflection_count,
+      core_memory_blocks: row.core_blocks,
+      last_reflection_at: this.getState(stateKeys.lastReflectionAt),
+      last_consolidation_at: this.getState(stateKeys.lastConsolidationAt),
+      oldest_event: row.oldest_event ?? null,
+      newest_event: row.newest_event ?? null,
     }
+  }
+
+  transaction<T>(fn: () => T): T {
+    return this.db.transaction(fn)()
   }
 
   close(): void {

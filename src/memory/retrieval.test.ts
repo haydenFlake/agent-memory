@@ -188,4 +188,85 @@ describe('RetrievalEngine', () => {
     const result = await retrieval.recall({ query: 'event', limit: 3 })
     expect(result.memories.length).toBeLessThanOrEqual(3)
   })
+
+  describe('scoring formula', () => {
+    it('computes score = w_r * recency + w_i * importance + w_rel * relevance', async () => {
+      const id = generateId()
+      const now = new Date()
+      sqlite.insertEvent({
+        id,
+        agent_id: 'test',
+        event_type: 'observation',
+        content: 'Scoring test',
+        importance: 0.6,
+        entities: [],
+        metadata: {},
+        created_at: now.toISOString(),
+        accessed_at: now.toISOString(),
+        access_count: 0,
+      })
+      const vector = await embeddings.embed('Scoring test')
+      await lance.add(id, 'event', vector, 'Scoring test', now.toISOString())
+
+      const result = await retrieval.recall({ query: 'Scoring test' })
+      expect(result.memories.length).toBeGreaterThanOrEqual(1)
+
+      const m = result.memories[0]
+      // Verify score equals weighted sum of components
+      const expectedScore = 0.4 * m.recency_score + 0.3 * m.importance_score + 0.3 * m.relevance_score
+      expect(m.score).toBeCloseTo(expectedScore, 5)
+    })
+
+    it('decays recency as 0.995^hours', async () => {
+      const id = generateId()
+      const hoursAgo = 48
+      const pastDate = new Date(Date.now() - hoursAgo * 3600000)
+      sqlite.insertEvent({
+        id,
+        agent_id: 'test',
+        event_type: 'observation',
+        content: 'Decay test',
+        importance: 0.5,
+        entities: [],
+        metadata: {},
+        created_at: pastDate.toISOString(),
+        accessed_at: pastDate.toISOString(),
+        access_count: 0,
+      })
+      const vector = await embeddings.embed('Decay test')
+      await lance.add(id, 'event', vector, 'Decay test', pastDate.toISOString())
+
+      const result = await retrieval.recall({ query: 'Decay test' })
+      const m = result.memories.find(mem => mem.id === id)
+      expect(m).toBeDefined()
+
+      // Expected recency: 0.995^48 ≈ 0.785
+      const expectedRecency = Math.pow(0.995, hoursAgo)
+      expect(m!.recency_score).toBeCloseTo(expectedRecency, 1)
+    })
+
+    it('clamps relevance for extreme distances', async () => {
+      const id = generateId()
+      sqlite.insertEvent({
+        id,
+        agent_id: 'test',
+        event_type: 'observation',
+        content: 'Clamp test',
+        importance: 0.5,
+        entities: [],
+        metadata: {},
+        created_at: new Date().toISOString(),
+        accessed_at: new Date().toISOString(),
+        access_count: 0,
+      })
+      const vector = await embeddings.embed('Clamp test')
+      await lance.add(id, 'event', vector, 'Clamp test', new Date().toISOString())
+
+      const result = await retrieval.recall({ query: 'Clamp test' })
+      for (const m of result.memories) {
+        expect(m.relevance_score).toBeGreaterThanOrEqual(0)
+        expect(m.relevance_score).toBeLessThanOrEqual(1)
+      }
+    })
+  })
 })
